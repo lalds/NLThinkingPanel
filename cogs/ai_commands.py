@@ -4,6 +4,7 @@
 import discord
 from discord.ext import commands
 import time
+import asyncio
 from core.logger import logger
 from core.rate_limiter import rate_limiter
 from modules.ai_provider import ai_provider
@@ -62,6 +63,12 @@ class AICog(commands.Cog):
                 logger.warning(f"Rate limit exceeded for user {ctx.author.name}")
                 return
         
+        if len(question) > config.max_user_input_chars:
+            await ctx.send(
+                f"⚠️ Слишком длинный запрос. Максимум {config.max_user_input_chars} символов."
+            )
+            return
+
         async with ctx.typing():
             try:
                 start_time = time.time()
@@ -144,8 +151,8 @@ class AICog(commands.Cog):
                     )
                 
                 await ctx.send(
-                    f"⚠️ Произошла ошибка при обработке запроса.\n"
-                    f"```{error_msg[:500]}```"
+                    "⚠️ Произошла ошибка при обработке запроса. "
+                    "Подробности сохранены в логах."
                 )
     
     @commands.command(name='quick')
@@ -163,6 +170,12 @@ class AICog(commands.Cog):
                     f"⏳ Превышен лимит. Попробуйте через {int(remaining_time)}s."
                 )
                 return
+
+        if len(question) > config.max_user_input_chars:
+            await ctx.send(
+                f"⚠️ Слишком длинный запрос. Максимум {config.max_user_input_chars} символов."
+            )
+            return
         
         async with ctx.typing():
             try:
@@ -204,7 +217,7 @@ class AICog(commands.Cog):
                 
             except Exception as e:
                 logger.error(f"Ошибка в quick команде: {e}", exc_info=True)
-                await ctx.send(f"⚠️ Ошибка: {str(e)[:500]}")
+                await ctx.send("⚠️ Ошибка обработки запроса. Подробности сохранены в логах.")
     
     @commands.command(name='context')
     async def show_context(self, ctx):
@@ -251,6 +264,12 @@ class AICog(commands.Cog):
                 remaining_time = rate_limiter.get_reset_time(ctx.author.id)
                 await ctx.send(f"⏳ Превышен лимит. Попробуйте через {int(remaining_time)} секунд.")
                 return
+
+        if len(question) > config.max_user_input_chars:
+            await ctx.send(
+                f"⚠️ Слишком длинный запрос. Максимум {config.max_user_input_chars} символов."
+            )
+            return
 
         async with ctx.typing():
             try:
@@ -337,7 +356,7 @@ class AICog(commands.Cog):
                     
             except Exception as e:
                 logger.error(f"Ошибка в команде !web: {e}", exc_info=True)
-                await ctx.send(f"⚠️ Произошла ошибка при поиске: {str(e)[:500]}")
+                await ctx.send("⚠️ Произошла ошибка при поиске. Подробности сохранены в логах.")
     
     @commands.group(name='profile', invoke_without_command=True)
     async def profile(self, ctx):
@@ -455,7 +474,7 @@ class AICog(commands.Cog):
             else:
                 await ctx.send("❌ Удаление отменено.")
                 
-        except TimeoutError:
+        except asyncio.TimeoutError:
             await ctx.send("⏱️ Время ожидания истекло. Удаление отменено.")
 
     def _split_message(self, text: str, chunk_size: int = 1900) -> list:
