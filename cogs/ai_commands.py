@@ -248,17 +248,25 @@ class AICog(commands.Cog):
             value=message_history,
             inline=False
         )
+
+        web_memory = context_builder.get_web_research_context(ctx.channel.id)
+        if web_memory:
+            if len(web_memory) > 1024:
+                web_memory = web_memory[:1021] + "..."
+            embed.add_field(
+                name="🌍 Память веб-исследований",
+                value=web_memory,
+                inline=False
+            )
         
         await ctx.send(embed=embed)
 
     @commands.command(name='web')
     async def web_search(self, ctx, *, question: str):
         """
-        Поиск в сети Интернет и анализ результатов с помощью ИИ.
-        
-        Использование: !web [ваш вопрос]
+        Поиск в сети, скрапинг нескольких страниц и краткая выжимка.
+        Накопленная выжимка сохраняется в контексте текущего канала.
         """
-        # Проверка rate limit
         if config.rate_limit_enabled:
             if not rate_limiter.is_allowed(ctx.author.id):
                 remaining_time = rate_limiter.get_reset_time(ctx.author.id)
@@ -274,27 +282,25 @@ class AICog(commands.Cog):
         async with ctx.typing():
             try:
                 start_time = time.time()
-                
-                # 1. Выполняем поиск
-                # Мы не будем удалять сообщение, чтобы пользователь видел статус
                 status_msg = await ctx.send(f"🔍 Ищу в сети информацию по запросу: *{question}*...")
-                
-                # Используем вспомогательный метод для поиска (можно вынести в SearchEngine)
-                search_results = search_engine.search(question)
-                
+
+                search_results = search_engine.search(question, max_results=7)
                 if not search_results:
                     await status_msg.edit(content="❌ К сожалению, поиск не дал результатов.")
                     return
 
-                await status_msg.edit(content="🧠 Анализирую найденную информацию...")
+                await status_msg.edit(content="🌐 Открываю найденные страницы и собираю факты...")
+                scraped_pages = search_engine.scrape_search_results(
+                    search_results,
+                    max_pages=3,
+                    per_page_chars=3500
+                )
 
-                # 2. Формируем контекст для ИИ
                 web_context = search_engine.format_results_for_ai(search_results)
-                
-                # Добавляем также контекст сервера для персонализации
+                scraped_context = search_engine.format_scraped_for_ai(scraped_pages)
+                memory_context = context_builder.get_web_research_context(ctx.channel.id)
+
                 server_context = context_builder.build_user_context(ctx.guild)
-                
-                # Добавляем профиль пользователя
                 user_profile_context = user_profiles.format_profile_for_context(
                     user_id=ctx.author.id,
                     user_name=ctx.author.display_name
@@ -302,10 +308,20 @@ class AICog(commands.Cog):
                 
                 full_system_prompt = f"""{config.system_prompt}
 
-Ты — ИИ-ассистент с доступом к Интернету. Используй предоставленные ниже результаты поиска, чтобы ответить на вопрос пользователя максимально точно.
-Всегда старайся давать ссылки на источники из результатов поиска.
+Ты — ИИ-ассистент с доступом к Интернету.
+Тебе переданы: результаты выдачи, извлечённый текст с нескольких страниц и память предыдущих веб-исследований в этом канале.
+
+Требования к ответу:
+1) Сначала дай краткую выжимку (3-7 пунктов).
+2) Затем дай развернутый ответ по вопросу.
+3) В конце добавь блок 'Источники' со ссылками, только из предоставленных данных.
+4) Если данных недостаточно — явно так и скажи.
 
 {web_context}
+
+{scraped_context}
+
+{memory_context if memory_context else ''}
 
 ---
 Контекст сервера (для справки):
@@ -318,16 +334,15 @@ class AICog(commands.Cog):
 Вопрос: {question}
 """
                 
-                # 3. Генерация ответа через ИИ
+                await status_msg.edit(content="🧠 Делаю выжимку из собранных страниц...")
                 result = ai_provider.generate_response(
                     system_prompt=full_system_prompt,
-                    user_message=f"Дай подробный ответ на основе поиска: {question}",
+                    user_message=f"Сделай выжимку и ответ на вопрос: {question}",
                     use_cache=config.cache_enabled
                 )
                 
                 response_time = time.time() - start_time
-                
-                # Сохраняем статистику
+
                 if config.analytics_enabled:
                     analytics.log_request(
                         user_id=ctx.author.id,
@@ -336,14 +351,27 @@ class AICog(commands.Cog):
                         tokens_used=result['tokens_used'],
                         response_time=response_time
                     )
+
+                source_urls = [page['href'] for page in scraped_pages[:5]]
+                if not source_urls:
+                    source_urls = [res.get('href', '') for res in search_results[:3] if res.get('href')]
+
+                memory_summary = search_engine.build_memory_summary(question, scraped_pages)
+                context_builder.add_web_research(
+                    channel_id=ctx.channel.id,
+                    query=question,
+                    summary=memory_summary,
+                    sources=source_urls
+                )
                 
                 answer = result['content']
-                footer = f"\n\n*🌐 Web Search Mode | {result['model']} | {result['response_time']:.2f}s*"
+                footer = (
+                    f"\n\n*🌐 Web+Scrape Mode | источников: {len(source_urls)} | "
+                    f"{result['model']} | {result['response_time']:.2f}s*"
+                )
                 
-                # Удаляем статусное сообщение перед финальным ответом
                 await status_msg.delete()
 
-                # Разбивка длинных ответов
                 if len(answer + footer) > 2000:
                     chunks = self._split_message(answer, 1900)
                     for i, chunk in enumerate(chunks):
