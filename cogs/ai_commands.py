@@ -88,6 +88,37 @@ class AICog(commands.Cog):
                 )
                 if user_profile_context:
                     full_prompt += "\n" + user_profile_context
+
+                used_auto_web = False
+                auto_web_sources = []
+
+                if search_engine.should_use_web_search(
+                    question=question,
+                    mode=config.web_auto_search_mode,
+                    triggers=config.web_auto_triggers
+                ):
+                    used_auto_web = True
+                    web_data = search_engine.gather_web_context(
+                        question=question,
+                        max_results=6,
+                        max_pages=2,
+                        per_page_chars=2500
+                    )
+                    auto_web_sources = web_data['source_urls']
+                    memory_context = context_builder.get_web_research_context(ctx.channel.id)
+
+                    full_prompt += f"""
+
+🌐 **АВТОМАТИЧЕСКИЙ WEB-КОНТЕКСТ (как MCP-подобный tool):**
+{web_data['web_context']}
+
+{web_data['scraped_context']}
+
+{memory_context if memory_context else ''}
+
+Используй веб-контекст только если он действительно релевантен вопросу.
+Если веб-данные не подходят — честно ответь без них.
+"""
                 
                 # Оптимизация промпта если слишком длинный
                 estimated_tokens = ai_provider.estimate_tokens(full_prompt + question)
@@ -118,10 +149,19 @@ class AICog(commands.Cog):
                 
                 # Отправка ответа
                 answer = result['content']
+
+                if used_auto_web:
+                    context_builder.add_web_research(
+                        channel_id=ctx.channel.id,
+                        query=question,
+                        summary=search_engine.build_memory_summary(question, web_data['scraped_pages']),
+                        sources=auto_web_sources
+                    )
                 
                 # Добавление footer с метаинформацией
                 cache_indicator = '🔄 Из кэша' if result['from_cache'] else f"🤖 {result['model']}"
-                footer = f"\n\n*{cache_indicator} | ⏱️ {result['response_time']:.2f}s*"
+                web_indicator = ' | 🌐 auto-web' if used_auto_web else ''
+                footer = f"\n\n*{cache_indicator}{web_indicator} | ⏱️ {result['response_time']:.2f}s*"
                 
                 # Разбивка длинных сообщений
                 if len(answer + footer) > 2000:

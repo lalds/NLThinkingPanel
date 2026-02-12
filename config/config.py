@@ -35,6 +35,16 @@ class BotConfig:
     context_window_hours: int = field(default_factory=lambda: int(os.getenv('CONTEXT_WINDOW_HOURS', '24')))
     max_user_input_chars: int = field(default_factory=lambda: int(os.getenv('MAX_USER_INPUT_CHARS', '2000')))
     
+
+    # Веб-поиск для обычных запросов
+    web_auto_search_mode: str = field(default_factory=lambda: os.getenv('WEB_AUTO_SEARCH_MODE', 'auto'))
+    web_auto_triggers: List[str] = field(default_factory=lambda: [
+        t.strip().lower() for t in os.getenv(
+            'WEB_AUTO_TRIGGERS',
+            'новости,сегодня,сейчас,актуальн,курс,погода,цена,дата,событи,источник,найди в интернете,поищи в интернете'
+        ).split(',') if t.strip()
+    ])
+
     # Кэширование
     cache_enabled: bool = field(default_factory=lambda: os.getenv('CACHE_ENABLED', 'true').lower() == 'true')
     cache_ttl_seconds: int = field(default_factory=lambda: int(os.getenv('CACHE_TTL_SECONDS', '300')))
