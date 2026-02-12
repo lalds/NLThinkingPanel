@@ -33,6 +33,7 @@ class BotConfig:
     # Контекст и история
     max_history_messages: int = field(default_factory=lambda: int(os.getenv('MAX_HISTORY_MESSAGES', '10')))
     context_window_hours: int = field(default_factory=lambda: int(os.getenv('CONTEXT_WINDOW_HOURS', '24')))
+    max_user_input_chars: int = field(default_factory=lambda: int(os.getenv('MAX_USER_INPUT_CHARS', '2000')))
     
     # Кэширование
     cache_enabled: bool = field(default_factory=lambda: os.getenv('CACHE_ENABLED', 'true').lower() == 'true')
@@ -72,6 +73,9 @@ class BotConfig:
         
         if self.max_tokens < 100 or self.max_tokens > 4000:
             errors.append("MAX_TOKENS должен быть между 100 и 4000")
+
+        if self.max_user_input_chars < 100 or self.max_user_input_chars > 10000:
+            errors.append("MAX_USER_INPUT_CHARS должен быть между 100 и 10000")
         
         return errors
     
@@ -81,6 +85,7 @@ class BotConfig:
             'command_prefix': self.command_prefix,
             'model': self.openrouter_model,
             'max_tokens': self.max_tokens,
+            'max_user_input_chars': self.max_user_input_chars,
             'temperature': self.temperature,
             'cache_enabled': self.cache_enabled,
             'rate_limit_enabled': self.rate_limit_enabled,
