@@ -253,6 +253,27 @@ context = context_builder.build_full_context(
 
 ---
 
+#### `modules/search_engine.py`
+**Назначение:** Поиск информации в Интернете
+
+**Классы:**
+- `SearchEngine` - обертка над DuckDuckGo Search
+
+**Возможности:**
+- Анонимный поиск без использования API-ключей
+- Кэширование результатов поиска (30 минут)
+- Форматирование данных для передачи в ИИ
+
+**Использование:**
+```python
+from modules.search_engine import search_engine
+
+results = search_engine.search("новости технологий")
+text_block = search_engine.format_results_for_ai(results)
+```
+
+---
+
 #### `modules/analytics.py`
 **Назначение:** Сбор и анализ метрик
 
