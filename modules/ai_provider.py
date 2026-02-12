@@ -182,6 +182,69 @@ class AIProvider:
         """
         return len(text) // 4
 
+    def check_search_necessity(self, query: str) -> bool:
+        """
+        Проверяет, требует ли запрос поиска в интернете.
+        Использует дешевую/быструю модель для классификации.
+        """
+        if not query:
+            return False
+            
+        # Проверка на явные триггеры (быстрый путь)
+        quick_triggers = ["погода", "курс", "новости", "сейчас", "сегодня", "url", "http", "поиск"]
+        if any(t in query.lower() for t in quick_triggers):
+            return True
+
+        system_prompt = (
+            "Ты — классификатор намерений. Твоя задача: определить, нужен ли поиск в Google/Интернете для качественного ответа. "
+            "Отвечай ТОЛЬКО 'YES', если поиск НУЖЕН. Отвечай 'NO', если можно ответить, используя только свои знания.\n"
+            "Примеры YES: 'какая погода?', 'курс биткоина', 'новости сегодня', 'кто победил в матче', 'документация по library v5'.\n"
+            "Примеры NO: 'привет', 'напиши код на python', 'расскажи анекдот', 'что такое инфляция', 'переведи текст'.\n"
+            "Reply with YES or NO only."
+        )
+        
+        try:
+            # Пробуем использовать очень дешевую/бесплатную модель для классификации
+            classifier_model = 'google/gemini-2.0-flash-lite-preview-02-05:free'
+            
+            # Если основной модели нет в списке fallback, добавляем её для reliability
+            
+            res = self.client.chat.completions.create(
+                model=classifier_model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": f"Query: {query}"}
+                ],
+                max_tokens=5,
+                temperature=0.1,
+                extra_headers={
+                    "HTTP-Referer": "https://github.com/NLThinkingPanel",
+                    "X-Title": "NLThinkingPanel Classifier",
+                }
+            )
+            
+            content = res.choices[0].message.content.strip().upper()
+            logger.info(f"🔍 Auto-Web Check '{query[:20]}...': {content}")
+            return 'YES' in content
+            
+        except Exception:
+            # Fallback: пробуем использовать текущую сконфигурированную модель
+            try:
+                res = self.client.chat.completions.create(
+                    model=config.openrouter_model,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": f"Query: {query}"}
+                    ],
+                    max_tokens=5,
+                    temperature=0.1
+                )
+                content = res.choices[0].message.content.strip().upper()
+                return 'YES' in content
+            except Exception as e:
+                logger.error(f"Ошибка классификации поиска: {e}")
+                return False
+
 
 # Глобальный экземпляр
 ai_provider = AIProvider()

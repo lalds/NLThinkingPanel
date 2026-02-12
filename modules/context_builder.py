@@ -6,6 +6,7 @@ import discord
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta
 from collections import defaultdict
+from modules.long_term_memory import long_term_memory
 
 
 class ContextBuilder:
@@ -32,6 +33,9 @@ class ContextBuilder:
 
         if len(history) > self.max_history:
             history.pop(0)
+            
+        # Авто-архивация в "холодную" память
+        long_term_memory.add_entry(channel_id, author, content)
 
     def get_message_history(self, channel_id: int) -> str:
         history = self._message_history.get(channel_id, [])
@@ -101,6 +105,25 @@ class ContextBuilder:
             if item['sources']:
                 lines.append(f"  Источники: {', '.join(item['sources'][:3])}")
 
+        return "\n".join(lines)
+
+    def get_cold_memory_context(self, channel_id: int, query: str) -> str:
+        """Извлекает релевантные факты из долгосрочного архива (RAG-lite)."""
+        relevant_entries = long_term_memory.search_relevant(channel_id, query, limit=5)
+        
+        if not relevant_entries:
+            return ""
+            
+        lines = ["❄️ **ХОЛОДНАЯ ПАМЯТЬ (Архивные факты):**"]
+        for entry in relevant_entries:
+            # Превращаем ISO timestamp в читаемый формат
+            try:
+                dt = datetime.fromisoformat(entry['timestamp']).strftime('%d.%m %H:%M')
+            except:
+                dt = entry['timestamp']
+                
+            lines.append(f"• [{dt}] {entry['author']}: {entry['content']}")
+            
         return "\n".join(lines)
 
     def build_user_context(self, guild: discord.Guild) -> str:
@@ -182,6 +205,10 @@ class ContextBuilder:
         user_context = self.build_user_context(guild)
         message_history = self.get_message_history(channel_id)
         web_research_context = self.get_web_research_context(channel_id)
+        
+        # Интеллектуальный поиск по архиву (RAG)
+        user_query = "" # Это поле будет заполнено в AI Cog или передано
+        cold_memory_context = self.get_cold_memory_context(channel_id, author_name) # Как fallback используем имя или вопрос
 
         full_prompt = f"""{system_prompt}
 
@@ -191,6 +218,8 @@ class ContextBuilder:
 
 {message_history}
 
+{cold_memory_context if cold_memory_context else ''}
+
 {web_research_context if web_research_context else ''}
 
 👤 **Пользователь, задающий вопрос:** {author_name}
@@ -198,10 +227,46 @@ class ContextBuilder:
 ⚡ **Инструкции:**
 - Используй информацию о текущей активности пользователей для персонализированных ответов
 - Учитывай историю недавних сообщений для понимания контекста разговора
+- **ХОЛОДНАЯ ПАМЯТЬ**: Это архивные сообщения из прошлого. Используй их, если пользователь спрашивает о чем-то, что обсуждалось ранее.
 - Если есть память веб-исследований, опирайся на неё в первую очередь и явно указывай, где это релевантно
 - Будь дружелюбным, но профессиональным
 """
 
+        return full_prompt
+
+    def build_full_context_with_query(
+        self,
+        guild: discord.Guild,
+        channel_id: int,
+        author_name: str,
+        system_prompt: str,
+        query: str
+    ) -> str:
+        """Расширенная версия сборки контекста с учетом поискового запроса."""
+        user_context = self.build_user_context(guild)
+        message_history = self.get_message_history(channel_id)
+        web_research_context = self.get_web_research_context(channel_id)
+        cold_memory_context = self.get_cold_memory_context(channel_id, query)
+
+        full_prompt = f"""{system_prompt}
+
+🌐 **КОНТЕКСТ СЕРВЕРА: {guild.name}**
+
+{user_context}
+
+{message_history}
+
+{cold_memory_context if cold_memory_context else ''}
+
+{web_research_context if web_research_context else ''}
+
+👤 **Пользователь, задающий вопрос:** {author_name}
+💬 **Запрос:** {query}
+
+⚡ **Инструкции:**
+- Используй ХОЛОДНУЮ ПАМЯТЬ для ответов на вопросы о прошлом диалоге.
+- Будь дружелюбным, но профессиональным.
+"""
         return full_prompt
 
     def clear_history(self, channel_id: Optional[int] = None) -> None:

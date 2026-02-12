@@ -34,6 +34,7 @@ class BotConfig:
     max_history_messages: int = field(default_factory=lambda: int(os.getenv('MAX_HISTORY_MESSAGES', '10')))
     context_window_hours: int = field(default_factory=lambda: int(os.getenv('CONTEXT_WINDOW_HOURS', '24')))
     max_user_input_chars: int = field(default_factory=lambda: int(os.getenv('MAX_USER_INPUT_CHARS', '2000')))
+    max_profile_chars: int = field(default_factory=lambda: int(os.getenv('MAX_PROFILE_CHARS', '10000')))
     
     # Веб-поиск для обычных запросов
     web_auto_search_mode: str = field(default_factory=lambda: os.getenv('WEB_AUTO_SEARCH_MODE', 'auto').strip().lower())

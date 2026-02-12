@@ -153,12 +153,13 @@ class AICog(commands.Cog):
             try:
                 start_time = time.time()
                 
-                # Построение контекста
-                full_prompt = context_builder.build_full_context(
+                # Построение контекста (с учетом RAG-поиска по истории)
+                full_prompt = context_builder.build_full_context_with_query(
                     guild=ctx.guild,
                     channel_id=ctx.channel.id,
                     author_name=ctx.author.display_name,
-                    system_prompt=config.system_prompt
+                    system_prompt=config.system_prompt,
+                    query=question
                 )
                 
                 # Добавление профиля пользователя (если есть)
@@ -381,6 +382,26 @@ class AICog(commands.Cog):
         
         await ctx.send(embed=embed)
 
+    @commands.command(name='mcp')
+    async def mcp_info(self, ctx):
+        """Информация о системе умного поиска (MCP-подобный протокол)."""
+        embed = discord.Embed(
+            title="🧠 Умный поиск (MCP Protocol)",
+            description=(
+                "Бот использует продвинутую систему анализа намерений для автоматического поиска в сети.\n\n"
+                "✅ **Как это работает:**\n"
+                "- Каждый ваш запрос анализируется быстрой AI моделью.\n"
+                "- Если вам нужны свежие данные (погода, новости, курсы), бот сам использует Google/DuckDuckGo.\n"
+                "- Результаты скрапятся и подаются основной модели в качестве контекста.\n\n"
+                "⚙️ **Режимы (!config):**\n"
+                "- `auto`: Умный выбор (по умолчанию)\n"
+                "- `always`: Поиск при каждом запросе\n"
+                "- `off`: Только локальные знания"
+            ),
+            color=discord.Color.gold()
+        )
+        await ctx.send(embed=embed)
+
     @commands.command(name='web')
     async def web_search(self, ctx, *, question: str):
         """
@@ -534,7 +555,7 @@ class AICog(commands.Cog):
         await ctx.send(
             "📋 **Управление профилем**\n\n"
             "Доступные команды:\n"
-            "`!profile set <текст>` - Установить/обновить ваш профиль\n"
+            "`!profile set <текст>` - Установить/обновить ваш профиль (до 10,000 символов/1000 слов)\n"
             "`!profile show` - Показать ваш профиль\n"
             "`!profile delete` - Удалить ваш профиль\n\n"
             "💡 Профиль используется ботом для персонализации ответов!"
@@ -549,8 +570,8 @@ class AICog(commands.Cog):
         !profile set Меня зовут Иван, я программист на Python. Люблю научную фантастику и кофе.
         !profile set Студент, изучаю машинное обучение. Предпочитаю краткие ответы.
         """
-        if len(profile_text) > 1000:
-            await ctx.send("⚠️ Профиль слишком длинный! Максимум 1000 символов.")
+        if len(profile_text) > config.max_profile_chars:
+            await ctx.send(f"⚠️ Профиль слишком длинный! Максимум {config.max_profile_chars} символов.")
             return
         
         success = user_profiles.set_profile(
@@ -565,9 +586,13 @@ class AICog(commands.Cog):
                 description=f"Ваш профиль успешно {'обновлен' if user_profiles.has_profile(ctx.author.id) else 'создан'}.",
                 color=discord.Color.green()
             )
+            p_text = profile_text
+            if len(p_text) > 1024:
+                p_text = p_text[:1021] + "..."
+                
             embed.add_field(
                 name="📝 Ваш профиль:",
-                value=profile_text[:1024],
+                value=p_text,
                 inline=False
             )
             embed.set_footer(text="Бот будет использовать эту информацию для персонализации ответов")
@@ -588,9 +613,13 @@ class AICog(commands.Cog):
             )
             return
         
+        profile_text = profile_data['profile']
+        if len(profile_text) > 4000:
+            profile_text = profile_text[:3997] + "..."
+
         embed = discord.Embed(
             title=f"📋 Профиль: {ctx.author.display_name}",
-            description=profile_data['profile'],
+            description=profile_text,
             color=discord.Color.blue()
         )
         embed.add_field(

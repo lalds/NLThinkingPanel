@@ -118,7 +118,7 @@ class SearchEngine:
         return scraped
 
     def should_use_web_search(self, question: str, mode: str = "auto", triggers: Optional[List[str]] = None) -> bool:
-        """Решает, нужен ли веб-поиск для вопроса."""
+        """Решает, нужен ли веб-поиск для вопроса. Использует гибридный подход (триггеры + AI)."""
         normalized_mode = str(mode or "auto").lower().strip()
         if normalized_mode == "always":
             return True
@@ -129,12 +129,28 @@ class SearchEngine:
         if not q:
             return False
 
-        quick_signals = ["http://", "https://", "ссылка", "источник", "пруф", "последние", "сегодня", "сейчас"]
+        # 1. Проверка явных триггеров из конфига (быстрый путь)
+        trigger_words = triggers or []
+        if any(word in q for word in trigger_words):
+            logger.info(f"Web search triggered by keyword in: '{q}'")
+            return True
+            
+        # 2. Проверка быстрых сигналов (URL и прочее)
+        quick_signals = ["http://", "https://", "ссылка", "источник", "пруф"]
         if any(signal in q for signal in quick_signals):
             return True
 
-        trigger_words = triggers or []
-        return any(word in q for word in trigger_words)
+        # 3. Интеллектуальная проверка через AI (если явных триггеров нет)
+        # Импорт здесь, чтобы избежать циклических ссылок при инициализации
+        try:
+            from modules.ai_provider import ai_provider
+            return ai_provider.check_search_necessity(question)
+        except ImportError:
+            logger.warning("Could not import ai_provider for web search check")
+            return False
+        except Exception as e:
+            logger.error(f"Error in intelligent web search check: {e}")
+            return False
 
     def gather_web_context(
         self,
