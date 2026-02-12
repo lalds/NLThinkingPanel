@@ -84,12 +84,8 @@ class BotConfig:
         if self.max_tokens < 100 or self.max_tokens > 4000:
             errors.append("MAX_TOKENS должен быть между 100 и 4000")
 
-
         if self.max_user_input_chars < 100 or self.max_user_input_chars > 10000:
             errors.append("MAX_USER_INPUT_CHARS должен быть между 100 и 10000")
-
-        if self.web_auto_search_mode not in {'off', 'auto', 'always'}:
-            errors.append("WEB_AUTO_SEARCH_MODE должен быть: off, auto или always")
         
         return errors
     
@@ -100,7 +96,6 @@ class BotConfig:
             'model': self.openrouter_model,
             'max_tokens': self.max_tokens,
             'max_user_input_chars': self.max_user_input_chars,
-            'web_auto_search_mode': self.web_auto_search_mode,
             'temperature': self.temperature,
             'cache_enabled': self.cache_enabled,
             'rate_limit_enabled': self.rate_limit_enabled,

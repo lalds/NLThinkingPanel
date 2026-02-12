@@ -117,55 +117,6 @@ class SearchEngine:
 
         return scraped
 
-    def should_use_web_search(self, question: str, mode: str = "auto", triggers: Optional[List[str]] = None) -> bool:
-        """Решает, нужен ли веб-поиск для вопроса."""
-        normalized_mode = (mode or "auto").lower().strip()
-        if normalized_mode == "always":
-            return True
-        if normalized_mode == "off":
-            return False
-
-        q = question.lower().strip()
-        if not q:
-            return False
-
-        quick_signals = ["http://", "https://", "ссылка", "источник", "пруф", "последние", "сегодня", "сейчас"]
-        if any(signal in q for signal in quick_signals):
-            return True
-
-        trigger_words = triggers or []
-        return any(word in q for word in trigger_words)
-
-    def gather_web_context(
-        self,
-        question: str,
-        max_results: int = 7,
-        max_pages: int = 3,
-        per_page_chars: int = 3500
-    ) -> Dict[str, object]:
-        """Полный цикл: поиск -> скрапинг -> форматирование контекста."""
-        search_results = self.search(question, max_results=max_results)
-        scraped_pages: List[Dict[str, str]] = []
-        if search_results:
-            scraped_pages = self.scrape_search_results(
-                search_results,
-                max_pages=max_pages,
-                per_page_chars=per_page_chars
-            )
-
-        source_urls = [page["href"] for page in scraped_pages[:5]]
-        if not source_urls:
-            source_urls = [res.get("href", "") for res in search_results[:3] if res.get("href")]
-
-        return {
-            "search_results": search_results,
-            "scraped_pages": scraped_pages,
-            "web_context": self.format_results_for_ai(search_results),
-            "scraped_context": self.format_scraped_for_ai(scraped_pages),
-            "memory_summary": self.build_memory_summary(question, scraped_pages),
-            "source_urls": source_urls,
-        }
-
     def format_results_for_ai(self, results: List[Dict[str, str]]) -> str:
         """Преобразует результаты поиска в текстовый блок для промпта."""
         if not results:
