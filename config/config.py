@@ -33,7 +33,18 @@ class BotConfig:
     # Контекст и история
     max_history_messages: int = field(default_factory=lambda: int(os.getenv('MAX_HISTORY_MESSAGES', '10')))
     context_window_hours: int = field(default_factory=lambda: int(os.getenv('CONTEXT_WINDOW_HOURS', '24')))
+    max_user_input_chars: int = field(default_factory=lambda: int(os.getenv('MAX_USER_INPUT_CHARS', '2000')))
     
+
+    # Веб-поиск для обычных запросов
+    web_auto_search_mode: str = field(default_factory=lambda: os.getenv('WEB_AUTO_SEARCH_MODE', 'auto'))
+    web_auto_triggers: List[str] = field(default_factory=lambda: [
+        t.strip().lower() for t in os.getenv(
+            'WEB_AUTO_TRIGGERS',
+            'новости,сегодня,сейчас,актуальн,курс,погода,цена,дата,событи,источник,найди в интернете,поищи в интернете'
+        ).split(',') if t.strip()
+    ])
+
     # Кэширование
     cache_enabled: bool = field(default_factory=lambda: os.getenv('CACHE_ENABLED', 'true').lower() == 'true')
     cache_ttl_seconds: int = field(default_factory=lambda: int(os.getenv('CACHE_TTL_SECONDS', '300')))
@@ -72,6 +83,13 @@ class BotConfig:
         
         if self.max_tokens < 100 or self.max_tokens > 4000:
             errors.append("MAX_TOKENS должен быть между 100 и 4000")
+
+
+        if self.max_user_input_chars < 100 or self.max_user_input_chars > 10000:
+            errors.append("MAX_USER_INPUT_CHARS должен быть между 100 и 10000")
+
+        if self.web_auto_search_mode not in {'off', 'auto', 'always'}:
+            errors.append("WEB_AUTO_SEARCH_MODE должен быть: off, auto или always")
         
         return errors
     
@@ -81,6 +99,8 @@ class BotConfig:
             'command_prefix': self.command_prefix,
             'model': self.openrouter_model,
             'max_tokens': self.max_tokens,
+            'max_user_input_chars': self.max_user_input_chars,
+            'web_auto_search_mode': self.web_auto_search_mode,
             'temperature': self.temperature,
             'cache_enabled': self.cache_enabled,
             'rate_limit_enabled': self.rate_limit_enabled,

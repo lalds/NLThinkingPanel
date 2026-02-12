@@ -4,6 +4,7 @@
 import discord
 from discord.ext import commands
 import time
+import asyncio
 from core.logger import logger
 from core.rate_limiter import rate_limiter
 from modules.ai_provider import ai_provider
@@ -19,6 +20,73 @@ class AICog(commands.Cog):
     
     def __init__(self, bot):
         self.bot = bot
+
+    def _safe_should_use_web(self, question: str) -> bool:
+        """Безопасная проверка авто-веб поиска (совместима со старыми версиями SearchEngine)."""
+        try:
+            if hasattr(search_engine, 'should_use_web_search'):
+                return search_engine.should_use_web_search(
+                    question=question,
+                    mode=getattr(config, 'web_auto_search_mode', 'auto'),
+                    triggers=getattr(config, 'web_auto_triggers', [])
+                )
+
+            fallback_triggers = [
+                'новости', 'сегодня', 'сейчас', 'актуальн', 'курс',
+                'погода', 'цена', 'дата', 'событи', 'источник',
+                'найди в интернете', 'поищи в интернете', 'http://', 'https://'
+            ]
+            q = question.lower()
+            return any(t in q for t in fallback_triggers)
+        except Exception:
+            return False
+
+    def _safe_gather_web_context(self, question: str, max_results: int, max_pages: int, per_page_chars: int) -> dict:
+        """Безопасный сбор веб-контекста (совместим со старым SearchEngine без gather_web_context)."""
+        if hasattr(search_engine, 'gather_web_context'):
+            return search_engine.gather_web_context(
+                question=question,
+                max_results=max_results,
+                max_pages=max_pages,
+                per_page_chars=per_page_chars
+            )
+
+        search_results = search_engine.search(question, max_results=max_results)
+        scraped_pages = []
+        if hasattr(search_engine, 'scrape_search_results'):
+            scraped_pages = search_engine.scrape_search_results(
+                search_results,
+                max_pages=max_pages,
+                per_page_chars=per_page_chars
+            )
+
+        if hasattr(search_engine, 'format_results_for_ai'):
+            web_context = search_engine.format_results_for_ai(search_results)
+        else:
+            web_context = 'Результаты поиска отсутствуют.'
+
+        if hasattr(search_engine, 'format_scraped_for_ai'):
+            scraped_context = search_engine.format_scraped_for_ai(scraped_pages)
+        else:
+            scraped_context = 'Не удалось загрузить содержимое веб-страниц.'
+
+        if hasattr(search_engine, 'build_memory_summary'):
+            memory_summary = search_engine.build_memory_summary(question, scraped_pages)
+        else:
+            memory_summary = f'Запрос: {question}. Собраны результаты поиска без выжимки.'
+
+        source_urls = [page.get('href', '') for page in scraped_pages[:5] if page.get('href')]
+        if not source_urls:
+            source_urls = [res.get('href', '') for res in search_results[:3] if res.get('href')]
+
+        return {
+            'search_results': search_results,
+            'scraped_pages': scraped_pages,
+            'web_context': web_context,
+            'scraped_context': scraped_context,
+            'memory_summary': memory_summary,
+            'source_urls': source_urls,
+        }
     
     @commands.Cog.listener()
     async def on_message(self, message):
@@ -62,6 +130,12 @@ class AICog(commands.Cog):
                 logger.warning(f"Rate limit exceeded for user {ctx.author.name}")
                 return
         
+        if len(question) > config.max_user_input_chars:
+            await ctx.send(
+                f"⚠️ Слишком длинный запрос. Максимум {config.max_user_input_chars} символов."
+            )
+            return
+
         async with ctx.typing():
             try:
                 start_time = time.time()
@@ -81,6 +155,33 @@ class AICog(commands.Cog):
                 )
                 if user_profile_context:
                     full_prompt += "\n" + user_profile_context
+
+                used_auto_web = False
+                auto_web_sources = []
+
+                if self._safe_should_use_web(question):
+                    used_auto_web = True
+                    web_data = self._safe_gather_web_context(
+                        question=question,
+                        max_results=6,
+                        max_pages=2,
+                        per_page_chars=2500
+                    )
+                    auto_web_sources = web_data['source_urls']
+                    memory_context = context_builder.get_web_research_context(ctx.channel.id)
+
+                    full_prompt += f"""
+
+🌐 **АВТОМАТИЧЕСКИЙ WEB-КОНТЕКСТ (как MCP-подобный tool):**
+{web_data['web_context']}
+
+{web_data['scraped_context']}
+
+{memory_context if memory_context else ''}
+
+Используй веб-контекст только если он действительно релевантен вопросу.
+Если веб-данные не подходят — честно ответь без них.
+"""
                 
                 # Оптимизация промпта если слишком длинный
                 estimated_tokens = ai_provider.estimate_tokens(full_prompt + question)
@@ -111,10 +212,19 @@ class AICog(commands.Cog):
                 
                 # Отправка ответа
                 answer = result['content']
+
+                if used_auto_web:
+                    context_builder.add_web_research(
+                        channel_id=ctx.channel.id,
+                        query=question,
+                        summary=search_engine.build_memory_summary(question, web_data['scraped_pages']),
+                        sources=auto_web_sources
+                    )
                 
                 # Добавление footer с метаинформацией
                 cache_indicator = '🔄 Из кэша' if result['from_cache'] else f"🤖 {result['model']}"
-                footer = f"\n\n*{cache_indicator} | ⏱️ {result['response_time']:.2f}s*"
+                web_indicator = ' | 🌐 auto-web' if used_auto_web else ''
+                footer = f"\n\n*{cache_indicator}{web_indicator} | ⏱️ {result['response_time']:.2f}s*"
                 
                 # Разбивка длинных сообщений
                 if len(answer + footer) > 2000:
@@ -144,8 +254,8 @@ class AICog(commands.Cog):
                     )
                 
                 await ctx.send(
-                    f"⚠️ Произошла ошибка при обработке запроса.\n"
-                    f"```{error_msg[:500]}```"
+                    "⚠️ Произошла ошибка при обработке запроса. "
+                    "Подробности сохранены в логах."
                 )
     
     @commands.command(name='quick')
@@ -163,6 +273,12 @@ class AICog(commands.Cog):
                     f"⏳ Превышен лимит. Попробуйте через {int(remaining_time)}s."
                 )
                 return
+
+        if len(question) > config.max_user_input_chars:
+            await ctx.send(
+                f"⚠️ Слишком длинный запрос. Максимум {config.max_user_input_chars} символов."
+            )
+            return
         
         async with ctx.typing():
             try:
@@ -204,7 +320,7 @@ class AICog(commands.Cog):
                 
             except Exception as e:
                 logger.error(f"Ошибка в quick команде: {e}", exc_info=True)
-                await ctx.send(f"⚠️ Ошибка: {str(e)[:500]}")
+                await ctx.send("⚠️ Ошибка обработки запроса. Подробности сохранены в логах.")
     
     @commands.command(name='context')
     async def show_context(self, ctx):
@@ -235,47 +351,61 @@ class AICog(commands.Cog):
             value=message_history,
             inline=False
         )
+
+        web_memory = context_builder.get_web_research_context(ctx.channel.id)
+        if web_memory:
+            if len(web_memory) > 1024:
+                web_memory = web_memory[:1021] + "..."
+            embed.add_field(
+                name="🌍 Память веб-исследований",
+                value=web_memory,
+                inline=False
+            )
         
         await ctx.send(embed=embed)
 
     @commands.command(name='web')
     async def web_search(self, ctx, *, question: str):
         """
-        Поиск в сети Интернет и анализ результатов с помощью ИИ.
-        
-        Использование: !web [ваш вопрос]
+        Поиск в сети, скрапинг нескольких страниц и краткая выжимка.
+        Накопленная выжимка сохраняется в контексте текущего канала.
         """
-        # Проверка rate limit
         if config.rate_limit_enabled:
             if not rate_limiter.is_allowed(ctx.author.id):
                 remaining_time = rate_limiter.get_reset_time(ctx.author.id)
                 await ctx.send(f"⏳ Превышен лимит. Попробуйте через {int(remaining_time)} секунд.")
                 return
 
+        if len(question) > config.max_user_input_chars:
+            await ctx.send(
+                f"⚠️ Слишком длинный запрос. Максимум {config.max_user_input_chars} символов."
+            )
+            return
+
         async with ctx.typing():
             try:
                 start_time = time.time()
-                
-                # 1. Выполняем поиск
-                # Мы не будем удалять сообщение, чтобы пользователь видел статус
                 status_msg = await ctx.send(f"🔍 Ищу в сети информацию по запросу: *{question}*...")
-                
-                # Используем вспомогательный метод для поиска (можно вынести в SearchEngine)
-                search_results = search_engine.search(question)
-                
+
+                web_data = self._safe_gather_web_context(
+                    question=question,
+                    max_results=7,
+                    max_pages=3,
+                    per_page_chars=3500
+                )
+                search_results = web_data['search_results']
                 if not search_results:
                     await status_msg.edit(content="❌ К сожалению, поиск не дал результатов.")
                     return
 
-                await status_msg.edit(content="🧠 Анализирую найденную информацию...")
+                await status_msg.edit(content="🌐 Открываю найденные страницы и собираю факты...")
+                scraped_pages = web_data['scraped_pages']
 
-                # 2. Формируем контекст для ИИ
-                web_context = search_engine.format_results_for_ai(search_results)
-                
-                # Добавляем также контекст сервера для персонализации
+                web_context = web_data['web_context']
+                scraped_context = web_data['scraped_context']
+                memory_context = context_builder.get_web_research_context(ctx.channel.id)
+
                 server_context = context_builder.build_user_context(ctx.guild)
-                
-                # Добавляем профиль пользователя
                 user_profile_context = user_profiles.format_profile_for_context(
                     user_id=ctx.author.id,
                     user_name=ctx.author.display_name
@@ -283,10 +413,20 @@ class AICog(commands.Cog):
                 
                 full_system_prompt = f"""{config.system_prompt}
 
-Ты — ИИ-ассистент с доступом к Интернету. Используй предоставленные ниже результаты поиска, чтобы ответить на вопрос пользователя максимально точно.
-Всегда старайся давать ссылки на источники из результатов поиска.
+Ты — ИИ-ассистент с доступом к Интернету.
+Тебе переданы: результаты выдачи, извлечённый текст с нескольких страниц и память предыдущих веб-исследований в этом канале.
+
+Требования к ответу:
+1) Сначала дай краткую выжимку (3-7 пунктов).
+2) Затем дай развернутый ответ по вопросу.
+3) В конце добавь блок 'Источники' со ссылками, только из предоставленных данных.
+4) Если данных недостаточно — явно так и скажи.
 
 {web_context}
+
+{scraped_context}
+
+{memory_context if memory_context else ''}
 
 ---
 Контекст сервера (для справки):
@@ -299,16 +439,15 @@ class AICog(commands.Cog):
 Вопрос: {question}
 """
                 
-                # 3. Генерация ответа через ИИ
+                await status_msg.edit(content="🧠 Делаю выжимку из собранных страниц...")
                 result = ai_provider.generate_response(
                     system_prompt=full_system_prompt,
-                    user_message=f"Дай подробный ответ на основе поиска: {question}",
+                    user_message=f"Сделай выжимку и ответ на вопрос: {question}",
                     use_cache=config.cache_enabled
                 )
                 
                 response_time = time.time() - start_time
-                
-                # Сохраняем статистику
+
                 if config.analytics_enabled:
                     analytics.log_request(
                         user_id=ctx.author.id,
@@ -317,14 +456,24 @@ class AICog(commands.Cog):
                         tokens_used=result['tokens_used'],
                         response_time=response_time
                     )
+
+                source_urls = web_data['source_urls']
+                memory_summary = web_data['memory_summary']
+                context_builder.add_web_research(
+                    channel_id=ctx.channel.id,
+                    query=question,
+                    summary=memory_summary,
+                    sources=source_urls
+                )
                 
                 answer = result['content']
-                footer = f"\n\n*🌐 Web Search Mode | {result['model']} | {result['response_time']:.2f}s*"
+                footer = (
+                    f"\n\n*🌐 Web+Scrape Mode | источников: {len(source_urls)} | "
+                    f"{result['model']} | {result['response_time']:.2f}s*"
+                )
                 
-                # Удаляем статусное сообщение перед финальным ответом
                 await status_msg.delete()
 
-                # Разбивка длинных ответов
                 if len(answer + footer) > 2000:
                     chunks = self._split_message(answer, 1900)
                     for i, chunk in enumerate(chunks):
@@ -337,7 +486,7 @@ class AICog(commands.Cog):
                     
             except Exception as e:
                 logger.error(f"Ошибка в команде !web: {e}", exc_info=True)
-                await ctx.send(f"⚠️ Произошла ошибка при поиске: {str(e)[:500]}")
+                await ctx.send("⚠️ Произошла ошибка при поиске. Подробности сохранены в логах.")
     
     @commands.group(name='profile', invoke_without_command=True)
     async def profile(self, ctx):
@@ -455,7 +604,7 @@ class AICog(commands.Cog):
             else:
                 await ctx.send("❌ Удаление отменено.")
                 
-        except TimeoutError:
+        except asyncio.TimeoutError:
             await ctx.send("⏱️ Время ожидания истекло. Удаление отменено.")
 
     def _split_message(self, text: str, chunk_size: int = 1900) -> list:

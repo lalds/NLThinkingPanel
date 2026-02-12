@@ -28,6 +28,7 @@ class NLThinkingPanelBot(commands.Bot):
         super().__init__(
             command_prefix=config.command_prefix,
             intents=intents,
+            allowed_mentions=discord.AllowedMentions.none(),
             help_command=commands.DefaultHelpCommand(
                 no_category='Команды',
                 dm_help=True
@@ -120,8 +121,8 @@ class NLThinkingPanelBot(commands.Bot):
         else:
             logger.error(f"Необработанная ошибка команды: {error}", exc_info=error)
             await ctx.send(
-                f"⚠️ Произошла непредвиденная ошибка.\n"
-                f"```{str(error)[:500]}```"
+                "⚠️ Произошла непредвиденная ошибка. "
+                "Подробности сохранены в логах."
             )
 
 
