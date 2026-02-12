@@ -35,9 +35,8 @@ class BotConfig:
     context_window_hours: int = field(default_factory=lambda: int(os.getenv('CONTEXT_WINDOW_HOURS', '24')))
     max_user_input_chars: int = field(default_factory=lambda: int(os.getenv('MAX_USER_INPUT_CHARS', '2000')))
     
-
     # Веб-поиск для обычных запросов
-    web_auto_search_mode: str = field(default_factory=lambda: os.getenv('WEB_AUTO_SEARCH_MODE', 'auto'))
+    web_auto_search_mode: str = field(default_factory=lambda: os.getenv('WEB_AUTO_SEARCH_MODE', 'auto').strip().lower())
     web_auto_triggers: List[str] = field(default_factory=lambda: [
         t.strip().lower() for t in os.getenv(
             'WEB_AUTO_TRIGGERS',
@@ -83,7 +82,6 @@ class BotConfig:
         
         if self.max_tokens < 100 or self.max_tokens > 4000:
             errors.append("MAX_TOKENS должен быть между 100 и 4000")
-
 
         if self.max_user_input_chars < 100 or self.max_user_input_chars > 10000:
             errors.append("MAX_USER_INPUT_CHARS должен быть между 100 и 10000")

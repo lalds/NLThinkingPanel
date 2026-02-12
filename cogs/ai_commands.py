@@ -25,11 +25,15 @@ class AICog(commands.Cog):
         """Безопасная проверка авто-веб поиска (совместима со старыми версиями SearchEngine)."""
         try:
             if hasattr(search_engine, 'should_use_web_search'):
-                return search_engine.should_use_web_search(
-                    question=question,
-                    mode=getattr(config, 'web_auto_search_mode', 'auto'),
-                    triggers=getattr(config, 'web_auto_triggers', [])
-                )
+                try:
+                    return search_engine.should_use_web_search(
+                        question=question,
+                        mode=getattr(config, 'web_auto_search_mode', 'auto'),
+                        triggers=getattr(config, 'web_auto_triggers', [])
+                    )
+                except TypeError:
+                    # Совместимость со старыми сигнатурами метода
+                    return search_engine.should_use_web_search(question)
 
             fallback_triggers = [
                 'новости', 'сегодня', 'сейчас', 'актуальн', 'курс',
@@ -44,21 +48,30 @@ class AICog(commands.Cog):
     def _safe_gather_web_context(self, question: str, max_results: int, max_pages: int, per_page_chars: int) -> dict:
         """Безопасный сбор веб-контекста (совместим со старым SearchEngine без gather_web_context)."""
         if hasattr(search_engine, 'gather_web_context'):
-            return search_engine.gather_web_context(
-                question=question,
-                max_results=max_results,
-                max_pages=max_pages,
-                per_page_chars=per_page_chars
-            )
+            try:
+                return search_engine.gather_web_context(
+                    question=question,
+                    max_results=max_results,
+                    max_pages=max_pages,
+                    per_page_chars=per_page_chars
+                )
+            except TypeError:
+                return search_engine.gather_web_context(question)
 
-        search_results = search_engine.search(question, max_results=max_results)
+        try:
+            search_results = search_engine.search(question, max_results=max_results)
+        except TypeError:
+            search_results = search_engine.search(question)
         scraped_pages = []
         if hasattr(search_engine, 'scrape_search_results'):
-            scraped_pages = search_engine.scrape_search_results(
-                search_results,
-                max_pages=max_pages,
-                per_page_chars=per_page_chars
-            )
+            try:
+                scraped_pages = search_engine.scrape_search_results(
+                    search_results,
+                    max_pages=max_pages,
+                    per_page_chars=per_page_chars
+                )
+            except TypeError:
+                scraped_pages = search_engine.scrape_search_results(search_results)
 
         if hasattr(search_engine, 'format_results_for_ai'):
             web_context = search_engine.format_results_for_ai(search_results)

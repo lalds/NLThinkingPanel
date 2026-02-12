@@ -119,7 +119,7 @@ class SearchEngine:
 
     def should_use_web_search(self, question: str, mode: str = "auto", triggers: Optional[List[str]] = None) -> bool:
         """Решает, нужен ли веб-поиск для вопроса."""
-        normalized_mode = (mode or "auto").lower().strip()
+        normalized_mode = str(mode or "auto").lower().strip()
         if normalized_mode == "always":
             return True
         if normalized_mode == "off":
@@ -144,14 +144,22 @@ class SearchEngine:
         per_page_chars: int = 3500
     ) -> Dict[str, object]:
         """Полный цикл: поиск -> скрапинг -> форматирование контекста."""
-        search_results = self.search(question, max_results=max_results)
+        try:
+            search_results = self.search(question, max_results=max_results)
+        except TypeError:
+            # Совместимость с возможными старыми сигнатурами после merge-конфликтов
+            search_results = self.search(question)
+
         scraped_pages: List[Dict[str, str]] = []
         if search_results:
-            scraped_pages = self.scrape_search_results(
-                search_results,
-                max_pages=max_pages,
-                per_page_chars=per_page_chars
-            )
+            try:
+                scraped_pages = self.scrape_search_results(
+                    search_results,
+                    max_pages=max_pages,
+                    per_page_chars=per_page_chars
+                )
+            except TypeError:
+                scraped_pages = self.scrape_search_results(search_results)
 
         source_urls = [page["href"] for page in scraped_pages[:5]]
         if not source_urls:
