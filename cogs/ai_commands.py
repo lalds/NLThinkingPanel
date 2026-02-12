@@ -172,9 +172,13 @@ class AICog(commands.Cog):
                 used_auto_web = False
                 auto_web_sources = []
 
-                if self._safe_should_use_web(question):
+                if search_engine.should_use_web_search(
+                    question=question,
+                    mode=config.web_auto_search_mode,
+                    triggers=config.web_auto_triggers
+                ):
                     used_auto_web = True
-                    web_data = self._safe_gather_web_context(
+                    web_data = search_engine.gather_web_context(
                         question=question,
                         max_results=6,
                         max_pages=2,
@@ -407,6 +411,7 @@ class AICog(commands.Cog):
                     per_page_chars=3500
                 )
                 search_results = web_data['search_results']
+                search_results = search_engine.search(question, max_results=7)
                 if not search_results:
                     await status_msg.edit(content="❌ К сожалению, поиск не дал результатов.")
                     return
@@ -416,6 +421,16 @@ class AICog(commands.Cog):
 
                 web_context = web_data['web_context']
                 scraped_context = web_data['scraped_context']
+                memory_context = context_builder.get_web_research_context(ctx.channel.id)
+
+                scraped_pages = search_engine.scrape_search_results(
+                    search_results,
+                    max_pages=3,
+                    per_page_chars=3500
+                )
+
+                web_context = search_engine.format_results_for_ai(search_results)
+                scraped_context = search_engine.format_scraped_for_ai(scraped_pages)
                 memory_context = context_builder.get_web_research_context(ctx.channel.id)
 
                 server_context = context_builder.build_user_context(ctx.guild)
@@ -472,6 +487,11 @@ class AICog(commands.Cog):
 
                 source_urls = web_data['source_urls']
                 memory_summary = web_data['memory_summary']
+                source_urls = [page['href'] for page in scraped_pages[:5]]
+                if not source_urls:
+                    source_urls = [res.get('href', '') for res in search_results[:3] if res.get('href')]
+
+                memory_summary = search_engine.build_memory_summary(question, scraped_pages)
                 context_builder.add_web_research(
                     channel_id=ctx.channel.id,
                     query=question,

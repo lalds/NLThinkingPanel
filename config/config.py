@@ -37,6 +37,9 @@ class BotConfig:
     
     # Веб-поиск для обычных запросов
     web_auto_search_mode: str = field(default_factory=lambda: os.getenv('WEB_AUTO_SEARCH_MODE', 'auto').strip().lower())
+
+    # Веб-поиск для обычных запросов
+    web_auto_search_mode: str = field(default_factory=lambda: os.getenv('WEB_AUTO_SEARCH_MODE', 'auto'))
     web_auto_triggers: List[str] = field(default_factory=lambda: [
         t.strip().lower() for t in os.getenv(
             'WEB_AUTO_TRIGGERS',
