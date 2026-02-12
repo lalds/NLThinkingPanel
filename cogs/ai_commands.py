@@ -20,6 +20,86 @@ class AICog(commands.Cog):
     
     def __init__(self, bot):
         self.bot = bot
+
+    def _safe_should_use_web(self, question: str) -> bool:
+        """Безопасная проверка авто-веб поиска (совместима со старыми версиями SearchEngine)."""
+        try:
+            if hasattr(search_engine, 'should_use_web_search'):
+                try:
+                    return search_engine.should_use_web_search(
+                        question=question,
+                        mode=getattr(config, 'web_auto_search_mode', 'auto'),
+                        triggers=getattr(config, 'web_auto_triggers', [])
+                    )
+                except TypeError:
+                    # Совместимость со старыми сигнатурами метода
+                    return search_engine.should_use_web_search(question)
+
+            fallback_triggers = [
+                'новости', 'сегодня', 'сейчас', 'актуальн', 'курс',
+                'погода', 'цена', 'дата', 'событи', 'источник',
+                'найди в интернете', 'поищи в интернете', 'http://', 'https://'
+            ]
+            q = question.lower()
+            return any(t in q for t in fallback_triggers)
+        except Exception:
+            return False
+
+    def _safe_gather_web_context(self, question: str, max_results: int, max_pages: int, per_page_chars: int) -> dict:
+        """Безопасный сбор веб-контекста (совместим со старым SearchEngine без gather_web_context)."""
+        if hasattr(search_engine, 'gather_web_context'):
+            try:
+                return search_engine.gather_web_context(
+                    question=question,
+                    max_results=max_results,
+                    max_pages=max_pages,
+                    per_page_chars=per_page_chars
+                )
+            except TypeError:
+                return search_engine.gather_web_context(question)
+
+        try:
+            search_results = search_engine.search(question, max_results=max_results)
+        except TypeError:
+            search_results = search_engine.search(question)
+        scraped_pages = []
+        if hasattr(search_engine, 'scrape_search_results'):
+            try:
+                scraped_pages = search_engine.scrape_search_results(
+                    search_results,
+                    max_pages=max_pages,
+                    per_page_chars=per_page_chars
+                )
+            except TypeError:
+                scraped_pages = search_engine.scrape_search_results(search_results)
+
+        if hasattr(search_engine, 'format_results_for_ai'):
+            web_context = search_engine.format_results_for_ai(search_results)
+        else:
+            web_context = 'Результаты поиска отсутствуют.'
+
+        if hasattr(search_engine, 'format_scraped_for_ai'):
+            scraped_context = search_engine.format_scraped_for_ai(scraped_pages)
+        else:
+            scraped_context = 'Не удалось загрузить содержимое веб-страниц.'
+
+        if hasattr(search_engine, 'build_memory_summary'):
+            memory_summary = search_engine.build_memory_summary(question, scraped_pages)
+        else:
+            memory_summary = f'Запрос: {question}. Собраны результаты поиска без выжимки.'
+
+        source_urls = [page.get('href', '') for page in scraped_pages[:5] if page.get('href')]
+        if not source_urls:
+            source_urls = [res.get('href', '') for res in search_results[:3] if res.get('href')]
+
+        return {
+            'search_results': search_results,
+            'scraped_pages': scraped_pages,
+            'web_context': web_context,
+            'scraped_context': scraped_context,
+            'memory_summary': memory_summary,
+            'source_urls': source_urls,
+        }
     
     @commands.Cog.listener()
     async def on_message(self, message):
@@ -324,12 +404,25 @@ class AICog(commands.Cog):
                 start_time = time.time()
                 status_msg = await ctx.send(f"🔍 Ищу в сети информацию по запросу: *{question}*...")
 
+                web_data = self._safe_gather_web_context(
+                    question=question,
+                    max_results=7,
+                    max_pages=3,
+                    per_page_chars=3500
+                )
+                search_results = web_data['search_results']
                 search_results = search_engine.search(question, max_results=7)
                 if not search_results:
                     await status_msg.edit(content="❌ К сожалению, поиск не дал результатов.")
                     return
 
                 await status_msg.edit(content="🌐 Открываю найденные страницы и собираю факты...")
+                scraped_pages = web_data['scraped_pages']
+
+                web_context = web_data['web_context']
+                scraped_context = web_data['scraped_context']
+                memory_context = context_builder.get_web_research_context(ctx.channel.id)
+
                 scraped_pages = search_engine.scrape_search_results(
                     search_results,
                     max_pages=3,
@@ -392,6 +485,8 @@ class AICog(commands.Cog):
                         response_time=response_time
                     )
 
+                source_urls = web_data['source_urls']
+                memory_summary = web_data['memory_summary']
                 source_urls = [page['href'] for page in scraped_pages[:5]]
                 if not source_urls:
                     source_urls = [res.get('href', '') for res in search_results[:3] if res.get('href')]

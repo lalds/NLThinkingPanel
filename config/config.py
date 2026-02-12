@@ -35,6 +35,8 @@ class BotConfig:
     context_window_hours: int = field(default_factory=lambda: int(os.getenv('CONTEXT_WINDOW_HOURS', '24')))
     max_user_input_chars: int = field(default_factory=lambda: int(os.getenv('MAX_USER_INPUT_CHARS', '2000')))
     
+    # Веб-поиск для обычных запросов
+    web_auto_search_mode: str = field(default_factory=lambda: os.getenv('WEB_AUTO_SEARCH_MODE', 'auto').strip().lower())
 
     # Веб-поиск для обычных запросов
     web_auto_search_mode: str = field(default_factory=lambda: os.getenv('WEB_AUTO_SEARCH_MODE', 'auto'))
@@ -86,6 +88,9 @@ class BotConfig:
 
         if self.max_user_input_chars < 100 or self.max_user_input_chars > 10000:
             errors.append("MAX_USER_INPUT_CHARS должен быть между 100 и 10000")
+
+        if self.web_auto_search_mode not in {'off', 'auto', 'always'}:
+            errors.append("WEB_AUTO_SEARCH_MODE должен быть: off, auto или always")
         
         return errors
     
@@ -96,6 +101,7 @@ class BotConfig:
             'model': self.openrouter_model,
             'max_tokens': self.max_tokens,
             'max_user_input_chars': self.max_user_input_chars,
+            'web_auto_search_mode': self.web_auto_search_mode,
             'temperature': self.temperature,
             'cache_enabled': self.cache_enabled,
             'rate_limit_enabled': self.rate_limit_enabled,
