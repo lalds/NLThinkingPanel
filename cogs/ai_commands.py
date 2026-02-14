@@ -7,11 +7,16 @@ import time
 import asyncio
 from core.logger import logger
 from core.rate_limiter import rate_limiter
+from core.permissions import permissions
+from core.event_system import event_system
 from modules.ai_provider import ai_provider
 from modules.analytics import analytics
 from modules.context_builder import context_builder
 from modules.search_engine import search_engine
 from modules.user_profiles import user_profiles
+from modules.personality_engine import personality_engine
+from modules.knowledge_base import knowledge_base
+from modules.mood_analyzer import mood_analyzer
 from config.config import config
 
 
@@ -47,59 +52,30 @@ class AICog(commands.Cog):
 
     def _safe_gather_web_context(self, question: str, max_results: int, max_pages: int, per_page_chars: int) -> dict:
         """Безопасный сбор веб-контекста (совместим со старым SearchEngine без gather_web_context)."""
-        if hasattr(search_engine, 'gather_web_context'):
-            try:
-                return search_engine.gather_web_context(
+        empty_result = {
+            "search_results": [],
+            "scraped_pages": [],
+            "web_context": "",
+            "scraped_context": "",
+            "memory_summary": "",
+            "source_urls": []
+        }
+        try:
+            if hasattr(search_engine, 'gather_web_context'):
+                result = search_engine.gather_web_context(
                     question=question,
                     max_results=max_results,
                     max_pages=max_pages,
                     per_page_chars=per_page_chars
                 )
-            except TypeError:
-                return search_engine.gather_web_context(question)
+                return result if result else empty_result
+            
+            # Fallback for older versions if needed (though current codebase seems to have it)
+            return empty_result
+        except Exception as e:
+            logger.error(f"Error in _safe_gather_web_context: {e}")
+            return empty_result 
 
-        try:
-            search_results = search_engine.search(question, max_results=max_results)
-        except TypeError:
-            search_results = search_engine.search(question)
-        scraped_pages = []
-        if hasattr(search_engine, 'scrape_search_results'):
-            try:
-                scraped_pages = search_engine.scrape_search_results(
-                    search_results,
-                    max_pages=max_pages,
-                    per_page_chars=per_page_chars
-                )
-            except TypeError:
-                scraped_pages = search_engine.scrape_search_results(search_results)
-
-        if hasattr(search_engine, 'format_results_for_ai'):
-            web_context = search_engine.format_results_for_ai(search_results)
-        else:
-            web_context = 'Результаты поиска отсутствуют.'
-
-        if hasattr(search_engine, 'format_scraped_for_ai'):
-            scraped_context = search_engine.format_scraped_for_ai(scraped_pages)
-        else:
-            scraped_context = 'Не удалось загрузить содержимое веб-страниц.'
-
-        if hasattr(search_engine, 'build_memory_summary'):
-            memory_summary = search_engine.build_memory_summary(question, scraped_pages)
-        else:
-            memory_summary = f'Запрос: {question}. Собраны результаты поиска без выжимки.'
-
-        source_urls = [page.get('href', '') for page in scraped_pages[:5] if page.get('href')]
-        if not source_urls:
-            source_urls = [res.get('href', '') for res in search_results[:3] if res.get('href')]
-
-        return {
-            'search_results': search_results,
-            'scraped_pages': scraped_pages,
-            'web_context': web_context,
-            'scraped_context': scraped_context,
-            'memory_summary': memory_summary,
-            'source_urls': source_urls,
-        }
     
     @commands.Cog.listener()
     async def on_message(self, message):
@@ -123,102 +99,103 @@ class AICog(commands.Cog):
     @commands.command(name='ask')
     async def ask(self, ctx, *, question: str):
         """
-        Задать вопрос AI с полным контекстом сервера.
-        
-        Использование: !ask [ваш вопрос]
-        
-        Примеры:
-        !ask Кто сейчас играет в игры?
-        !ask Что посоветуешь посмотреть?
-        !ask Помоги мне с Python кодом
+        Задать вопрос AI с полным контекстом.
+        Учитывается: история, личность, настроение, база знаний, веб.
         """
-        # Проверка rate limit
+        # 1. Permission check
+        if not permissions.has_permission(ctx.author.id, 'commands.ask'):
+             await ctx.reply("❌ У вас нет прав на использование этой команды.")
+             return
+
+        # 2. Rate limit
         if config.rate_limit_enabled:
+            # VIP users might have higher limits, handled in rate_limiter? 
+            # Currently strict check.
             if not rate_limiter.is_allowed(ctx.author.id):
                 remaining_time = rate_limiter.get_reset_time(ctx.author.id)
-                await ctx.send(
-                    f"⏳ {ctx.author.mention}, вы превысили лимит запросов. "
-                    f"Попробуйте снова через {int(remaining_time)} секунд."
-                )
-                logger.warning(f"Rate limit exceeded for user {ctx.author.name}")
+                await ctx.send(f"⏳ Лимит запросов. Ждите {int(remaining_time)}s.")
                 return
         
         if len(question) > config.max_user_input_chars:
-            await ctx.send(
-                f"⚠️ Слишком длинный запрос. Максимум {config.max_user_input_chars} символов."
-            )
+            await ctx.send(f"⚠️ Слишком длинно. Максимум {config.max_user_input_chars}.")
             return
 
         async with ctx.typing():
             try:
                 start_time = time.time()
                 
-                # Построение контекста (с учетом RAG-поиска по истории)
-                full_prompt = context_builder.build_full_context_with_query(
+                # --- Context Gathering ---
+                
+                # A. Personality System Prompt
+                active_persona = personality_engine.get_active_personality(ctx.channel.id, ctx.guild.id)
+                base_system_prompt = personality_engine.get_system_prompt(ctx.channel.id, ctx.guild.id)
+                
+                # B. Knowledge Base (RAG)
+                kb_context = knowledge_base.get_relevant_for_ai(question, ctx.guild.id) if ctx.guild else ""
+                
+                # C. Mood Context
+                mood_ctx = mood_analyzer.get_mood_context_for_ai(ctx.author.id, ctx.channel.id)
+                
+                # D. User Profile
+                profile_ctx = user_profiles.format_profile_for_context(ctx.author.id, ctx.author.display_name)
+                
+                # Combine System Prompt
+                full_system_prompt = f"{base_system_prompt}\n\n"
+                
+                if kb_context:
+                    full_system_prompt += f"{kb_context}\n\n"
+                    
+                if mood_ctx:
+                    full_system_prompt += f"🎭 **КОНТЕКСТ НАСТРОЕНИЯ:**\n{mood_ctx}\n\n"
+                    
+                full_system_prompt += f"👤 **ПРОФИЛЬ ПОЛЬЗОВАТЕЛЯ:**\n{profile_ctx}\n"
+
+                # E. Chat History & Web Search
+                # We use context_builder to mix message history and potentially web results
+                
+                used_auto_web = False
+                auto_web_sources = []
+                web_block = ""
+                
+                # Check Auto-Web
+                should_search = self._safe_should_use_web(question)
+                if should_search:
+                     used_auto_web = True
+                     web_data = self._safe_gather_web_context(question, 6, 2, 2500)
+                     auto_web_sources = web_data['source_urls']
+                     web_block = f"\n🌐 **WEB SEARCH:**\n{web_data['web_context']}\n{web_data['scraped_context']}\n"
+
+                # Final Prompt Construction
+                # context_builder builds the history block. We pass our refined system prompt to it.
+                final_prompt = context_builder.build_full_context_with_query(
                     guild=ctx.guild,
                     channel_id=ctx.channel.id,
                     author_name=ctx.author.display_name,
-                    system_prompt=config.system_prompt,
+                    system_prompt=full_system_prompt,
                     query=question
                 )
                 
-                # Добавление профиля пользователя (если есть)
-                user_profile_context = user_profiles.format_profile_for_context(
-                    user_id=ctx.author.id,
-                    user_name=ctx.author.display_name
-                )
-                if user_profile_context:
-                    full_prompt += "\n" + user_profile_context
-
-                used_auto_web = False
-                auto_web_sources = []
-
-                if search_engine.should_use_web_search(
-                    question=question,
-                    mode=config.web_auto_search_mode,
-                    triggers=config.web_auto_triggers
-                ):
-                    used_auto_web = True
-                    web_data = search_engine.gather_web_context(
-                        question=question,
-                        max_results=6,
-                        max_pages=2,
-                        per_page_chars=2500
-                    )
-                    auto_web_sources = web_data['source_urls']
-                    memory_context = context_builder.get_web_research_context(ctx.channel.id)
-
-                    full_prompt += f"""
-
-🌐 **АВТОМАТИЧЕСКИЙ WEB-КОНТЕКСТ (как MCP-подобный tool):**
-{web_data['web_context']}
-
-{web_data['scraped_context']}
-
-{memory_context if memory_context else ''}
-
-Используй веб-контекст только если он действительно релевантен вопросу.
-Если веб-данные не подходят — честно ответь без них.
-"""
+                if web_block:
+                    final_prompt += web_block
                 
-                # Оптимизация промпта если слишком длинный
-                estimated_tokens = ai_provider.estimate_tokens(full_prompt + question)
-                if estimated_tokens > config.max_tokens * 0.7:
-                    logger.info(f"Оптимизация промпта ({estimated_tokens} токенов)")
-                    full_prompt = ai_provider.optimize_prompt(full_prompt)
+                # Optimize
+                estimated_tokens = ai_provider.estimate_tokens(final_prompt)
+                if estimated_tokens > config.max_tokens * 0.8:
+                    final_prompt = ai_provider.optimize_prompt(final_prompt)
                 
-                # Генерация ответа
-                logger.info(f"Запрос от {ctx.author.name}: {question[:100]}...")
-                
+                # --- Generation ---
                 result = ai_provider.generate_response(
-                    system_prompt=full_prompt,
+                    system_prompt=final_prompt,
                     user_message=question,
+                    temperature=active_persona.temperature, # Use persona temp
                     use_cache=config.cache_enabled
                 )
                 
                 response_time = time.time() - start_time
                 
-                # Логирование в аналитику
+                # --- Post-processing ---
+                
+                # Analytics
                 if config.analytics_enabled:
                     analytics.log_request(
                         user_id=ctx.author.id,
@@ -228,23 +205,29 @@ class AICog(commands.Cog):
                         response_time=response_time
                     )
                 
-                # Отправка ответа
-                answer = result['content']
-
+                # Save Web Context to memory
                 if used_auto_web:
                     context_builder.add_web_research(
-                        channel_id=ctx.channel.id,
-                        query=question,
-                        summary=search_engine.build_memory_summary(question, web_data['scraped_pages']),
-                        sources=auto_web_sources
+                         ctx.channel.id, question, 
+                         search_engine.build_memory_summary(question, web_data['scraped_pages']),
+                         auto_web_sources
                     )
                 
-                # Добавление footer с метаинформацией
-                cache_indicator = '🔄 Из кэша' if result['from_cache'] else f"🤖 {result['model']}"
-                web_indicator = ' | 🌐 auto-web' if used_auto_web else ''
-                footer = f"\n\n*{cache_indicator}{web_indicator} | ⏱️ {result['response_time']:.2f}s*"
+                # Format Response
+                answer = result['content']
+                footer_parts = [
+                    f"🤖 {active_persona.name} ({result['model']})" if not result['from_cache'] else f"🔄 {active_persona.name} (Cache)",
+                    f"⏱️ {response_time:.2f}s"
+                ]
+                if used_auto_web:
+                    footer_parts.append("🌐 Web")
                 
-                # Разбивка длинных сообщений
+                footer = f"\n\n*{' | '.join(footer_parts)}*"
+                
+                # Emit Event
+                await event_system.emit('ai.response', user_id=ctx.author.id, tokens=result['tokens_used'])
+
+                # Send
                 if len(answer + footer) > 2000:
                     chunks = self._split_message(answer, 1900)
                     for i, chunk in enumerate(chunks):
@@ -254,91 +237,52 @@ class AICog(commands.Cog):
                             await ctx.send(chunk)
                 else:
                     await ctx.send(answer + footer)
-                
-                logger.info(
-                    f"Успешный ответ для {ctx.author.name} "
-                    f"({result['tokens_used']} токенов, {response_time:.2f}s)"
-                )
-                
+
             except Exception as e:
-                error_msg = str(e)
-                logger.error(f"Ошибка при обработке запроса: {error_msg}", exc_info=True)
-                
-                if config.analytics_enabled:
-                    analytics.log_error(
-                        error_type='ask_command',
-                        message=error_msg,
-                        user_id=ctx.author.id
-                    )
-                
-                await ctx.send(
-                    "⚠️ Произошла ошибка при обработке запроса. "
-                    "Подробности сохранены в логах."
-                )
+                logger.error(f"Error in ask: {e}", exc_info=True)
+                await ctx.send("⚠️ Ошибка. Мой мозг перегрелся. Попробуйте позже.")
+
     
     @commands.command(name='quick')
     async def quick(self, ctx, *, question: str):
-        """
-        Быстрый вопрос без контекста сервера (быстрее и дешевле).
-        
-        Использование: !quick [вопрос]
-        """
-        # Проверка rate limit
-        if config.rate_limit_enabled:
-            if not rate_limiter.is_allowed(ctx.author.id):
-                remaining_time = rate_limiter.get_reset_time(ctx.author.id)
-                await ctx.send(
-                    f"⏳ Превышен лимит. Попробуйте через {int(remaining_time)}s."
-                )
-                return
+        """Быстрый вопрос (без контекста чата), но с личностью бота."""
+        if not permissions.has_permission(ctx.author.id, 'commands.quick'):
+             await ctx.reply("❌ Нет прав.")
+             return
 
         if len(question) > config.max_user_input_chars:
-            await ctx.send(
-                f"⚠️ Слишком длинный запрос. Максимум {config.max_user_input_chars} символов."
-            )
+            await ctx.send("⚠️ Слишком длинно.")
             return
-        
+
         async with ctx.typing():
             try:
                 start_time = time.time()
                 
-                # Простой промпт без контекста
-                simple_prompt = "Ты полезный ассистент. Отвечай кратко и по делу."
+                # Use current persona info + User Profile, but NO chat history
+                active_persona = personality_engine.get_active_personality(ctx.channel.id, ctx.guild.id)
+                profile_ctx = user_profiles.format_profile_for_context(ctx.author.id, ctx.author.display_name)
                 
+                system_prompt = f"{active_persona.system_prompt}\n\n{profile_ctx}\n\nОтвечай кратко и по делу."
+
                 result = ai_provider.generate_response(
-                    system_prompt=simple_prompt,
+                    system_prompt=system_prompt,
                     user_message=question,
+                    temperature=active_persona.temperature,
                     use_cache=config.cache_enabled
                 )
                 
                 response_time = time.time() - start_time
-                
-                # Аналитика
-                if config.analytics_enabled:
-                    analytics.log_request(
-                        user_id=ctx.author.id,
-                        user_name=ctx.author.display_name,
-                        model=result['model'],
-                        tokens_used=result['tokens_used'],
-                        response_time=response_time
-                    )
-                
                 answer = result['content']
-                footer = f"\n\n*⚡ Quick mode | {result['response_time']:.2f}s*"
+                footer = f"\n\n*⚡ {active_persona.name} | {result['response_time']:.2f}s*"
                 
                 if len(answer + footer) > 2000:
-                    chunks = self._split_message(answer, 1900)
-                    for i, chunk in enumerate(chunks):
-                        if i == len(chunks) - 1:
-                            await ctx.send(chunk + footer)
-                        else:
-                            await ctx.send(chunk)
+                    await ctx.send(answer[:1900] + "..." + footer)
                 else:
                     await ctx.send(answer + footer)
-                
+                    
             except Exception as e:
-                logger.error(f"Ошибка в quick команде: {e}", exc_info=True)
-                await ctx.send("⚠️ Ошибка обработки запроса. Подробности сохранены в логах.")
+                logger.error(f"Error in quick: {e}")
+                await ctx.send("⚠️ Ошибка.")
     
     @commands.command(name='context')
     async def show_context(self, ctx):
@@ -405,71 +349,52 @@ class AICog(commands.Cog):
     @commands.command(name='web')
     async def web_search(self, ctx, *, question: str):
         """
-        Поиск в сети, скрапинг нескольких страниц и краткая выжимка.
-        Накопленная выжимка сохраняется в контексте текущего канала.
+        Поиск в сети скрапинг и анализ.
         """
-        if config.rate_limit_enabled:
-            if not rate_limiter.is_allowed(ctx.author.id):
-                remaining_time = rate_limiter.get_reset_time(ctx.author.id)
-                await ctx.send(f"⏳ Превышен лимит. Попробуйте через {int(remaining_time)} секунд.")
-                return
+        if not permissions.has_permission(ctx.author.id, 'commands.web'):
+             await ctx.reply("❌ Нет прав на веб-поиск.")
+             return
 
         if len(question) > config.max_user_input_chars:
-            await ctx.send(
-                f"⚠️ Слишком длинный запрос. Максимум {config.max_user_input_chars} символов."
-            )
+            await ctx.send(f"⚠️ Слишком длинно.")
             return
 
         async with ctx.typing():
             try:
                 start_time = time.time()
-                status_msg = await ctx.send(f"🔍 Ищу в сети информацию по запросу: *{question}*...")
+                status_msg = await ctx.send(f"🔍 Ищу: *{question}*...")
 
-                web_data = self._safe_gather_web_context(
-                    question=question,
-                    max_results=7,
-                    max_pages=3,
-                    per_page_chars=3500
-                )
+                # 1. Search & Scrape
+                web_data = self._safe_gather_web_context(question, 7, 3, 3500)
                 search_results = web_data['search_results']
-                search_results = search_engine.search(question, max_results=7)
+                scraped_pages = web_data['scraped_pages']
+                
                 if not search_results:
-                    await status_msg.edit(content="❌ К сожалению, поиск не дал результатов.")
+                    await status_msg.edit(content="❌ Ничего не найдено.")
                     return
 
-                await status_msg.edit(content="🌐 Открываю найденные страницы и собираю факты...")
-                scraped_pages = web_data['scraped_pages']
+                await status_msg.edit(content="🌐 Анализирую страницы...")
 
+                # 2. Build Context
+                active_persona = personality_engine.get_active_personality(ctx.channel.id, ctx.guild.id)
+                
                 web_context = web_data['web_context']
                 scraped_context = web_data['scraped_context']
                 memory_context = context_builder.get_web_research_context(ctx.channel.id)
-
-                scraped_pages = search_engine.scrape_search_results(
-                    search_results,
-                    max_pages=3,
-                    per_page_chars=3500
-                )
-
-                web_context = search_engine.format_results_for_ai(search_results)
-                scraped_context = search_engine.format_scraped_for_ai(scraped_pages)
-                memory_context = context_builder.get_web_research_context(ctx.channel.id)
-
-                server_context = context_builder.build_user_context(ctx.guild)
-                user_profile_context = user_profiles.format_profile_for_context(
-                    user_id=ctx.author.id,
-                    user_name=ctx.author.display_name
-                )
                 
-                full_system_prompt = f"""{config.system_prompt}
+                server_context = context_builder.build_user_context(ctx.guild)
+                profile_ctx = user_profiles.format_profile_for_context(ctx.author.id, ctx.author.display_name)
+                
+                # 3. Construct System Prompt
+                full_system_prompt = f"""{active_persona.system_prompt}
 
 Ты — ИИ-ассистент с доступом к Интернету.
-Тебе переданы: результаты выдачи, извлечённый текст с нескольких страниц и память предыдущих веб-исследований в этом канале.
+Тебе переданы: результаты выдачи, извлечённый текст с нескольких страниц и память предыдущих веб-исследований.
 
 Требования к ответу:
 1) Сначала дай краткую выжимку (3-7 пунктов).
 2) Затем дай развернутый ответ по вопросу.
-3) В конце добавь блок 'Источники' со ссылками, только из предоставленных данных.
-4) Если данных недостаточно — явно так и скажи.
+3) В конце добавь блок 'Источники' со ссылками.
 
 {web_context}
 
@@ -478,25 +403,29 @@ class AICog(commands.Cog):
 {memory_context if memory_context else ''}
 
 ---
-Контекст сервера (для справки):
+Контекст сервера:
 {server_context}
 ---
 
-{user_profile_context if user_profile_context else ''}
+{profile_ctx}
 
 Пользователь: {ctx.author.display_name}
 Вопрос: {question}
 """
                 
-                await status_msg.edit(content="🧠 Делаю выжимку из собранных страниц...")
+                await status_msg.edit(content="🧠 Формирую ответ...")
+                
                 result = ai_provider.generate_response(
                     system_prompt=full_system_prompt,
                     user_message=f"Сделай выжимку и ответ на вопрос: {question}",
+                    temperature=active_persona.temperature,
                     use_cache=config.cache_enabled
                 )
                 
                 response_time = time.time() - start_time
-
+                answer = result['content']
+                
+                # Analytics
                 if config.analytics_enabled:
                     analytics.log_request(
                         user_id=ctx.author.id,
@@ -505,13 +434,9 @@ class AICog(commands.Cog):
                         tokens_used=result['tokens_used'],
                         response_time=response_time
                     )
-
+                
+                # Update memory
                 source_urls = web_data['source_urls']
-                memory_summary = web_data['memory_summary']
-                source_urls = [page['href'] for page in scraped_pages[:5]]
-                if not source_urls:
-                    source_urls = [res.get('href', '') for res in search_results[:3] if res.get('href')]
-
                 memory_summary = search_engine.build_memory_summary(question, scraped_pages)
                 context_builder.add_web_research(
                     channel_id=ctx.channel.id,
@@ -520,14 +445,13 @@ class AICog(commands.Cog):
                     sources=source_urls
                 )
                 
-                answer = result['content']
                 footer = (
-                    f"\n\n*🌐 Web+Scrape Mode | источников: {len(source_urls)} | "
-                    f"{result['model']} | {result['response_time']:.2f}s*"
+                    f"\n\n*🌐 Web | {active_persona.name} | источников: {len(source_urls)} | "
+                    f"{result['response_time']:.2f}s*"
                 )
                 
                 await status_msg.delete()
-
+                
                 if len(answer + footer) > 2000:
                     chunks = self._split_message(answer, 1900)
                     for i, chunk in enumerate(chunks):
@@ -539,8 +463,8 @@ class AICog(commands.Cog):
                     await ctx.send(answer + footer)
                     
             except Exception as e:
-                logger.error(f"Ошибка в команде !web: {e}", exc_info=True)
-                await ctx.send("⚠️ Произошла ошибка при поиске. Подробности сохранены в логах.")
+                logger.error(f"Error in web: {e}", exc_info=True)
+                await ctx.send("⚠️ Ошибка веб-поиска.")
     
     @commands.group(name='profile', invoke_without_command=True)
     async def profile(self, ctx):

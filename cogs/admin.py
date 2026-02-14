@@ -8,6 +8,7 @@ from typing import Optional
 from core.logger import logger
 from core.cache import cache
 from core.rate_limiter import rate_limiter
+from core.permissions import permissions
 from modules.analytics import analytics
 from modules.context_builder import context_builder
 from config.config import config
@@ -19,15 +20,17 @@ class AdminCommands(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
     
-    def is_admin(self, user_id: int) -> bool:
-        """Проверка, является ли пользователь администратором."""
-        return user_id in config.admin_ids
+    def _check_perm(self, ctx, perm: str) -> bool:
+        """Проверка прав администратора."""
+        if ctx.author.id in config.admin_ids:
+            return True
+        return permissions.has_permission(ctx.author.id, perm)
     
     @commands.command(name='stats')
     async def stats(self, ctx):
         """Показать общую статистику бота."""
-        if not self.is_admin(ctx.author.id):
-            await ctx.send("❌ У вас нет прав для выполнения этой команды.")
+        if not self._check_perm(ctx, 'admin.stats'):
+            await ctx.send("❌ У вас нет прав (admin.stats).")
             return
         
         stats = analytics.get_stats()
@@ -110,8 +113,8 @@ class AdminCommands(commands.Cog):
         Показать отчёт за последние N дней.
         Использование: !report [дни]
         """
-        if not self.is_admin(ctx.author.id):
-            await ctx.send("❌ У вас нет прав для выполнения этой команды.")
+        if not self._check_perm(ctx, 'admin.report'):
+            await ctx.send("❌ У вас нет прав (admin.report).")
             return
         
         if days < 1 or days > 30:
@@ -131,8 +134,8 @@ class AdminCommands(commands.Cog):
     @commands.command(name='clearcache')
     async def clear_cache(self, ctx):
         """Очистить кэш бота."""
-        if not self.is_admin(ctx.author.id):
-            await ctx.send("❌ У вас нет прав для выполнения этой команды.")
+        if not self._check_perm(ctx, 'admin.cache'):
+            await ctx.send("❌ У вас нет прав (admin.cache).")
             return
         
         cache.clear()
@@ -142,8 +145,8 @@ class AdminCommands(commands.Cog):
     @commands.command(name='clearhistory')
     async def clear_history(self, ctx):
         """Очистить историю сообщений текущего канала."""
-        if not self.is_admin(ctx.author.id):
-            await ctx.send("❌ У вас нет прав для выполнения этой команды.")
+        if not self._check_perm(ctx, 'admin.history'):
+            await ctx.send("❌ У вас нет прав (admin.history).")
             return
         
         context_builder.clear_history(ctx.channel.id)
@@ -156,8 +159,8 @@ class AdminCommands(commands.Cog):
         Сбросить rate limit для пользователя.
         Использование: !resetlimit [@пользователь]
         """
-        if not self.is_admin(ctx.author.id):
-            await ctx.send("❌ У вас нет прав для выполнения этой команды.")
+        if not self._check_perm(ctx, 'admin.ratelimit'):
+            await ctx.send("❌ У вас нет прав (admin.ratelimit).")
             return
         
         target_user = user or ctx.author
@@ -169,8 +172,8 @@ class AdminCommands(commands.Cog):
     @commands.command(name='config')
     async def show_config(self, ctx):
         """Показать текущую конфигурацию бота."""
-        if not self.is_admin(ctx.author.id):
-            await ctx.send("❌ У вас нет прав для выполнения этой команды.")
+        if not self._check_perm(ctx, 'admin.config'):
+            await ctx.send("❌ У вас нет прав (admin.config).")
             return
         
         config_dict = config.to_dict()

@@ -1,8 +1,9 @@
 """
-NLThinkingPanel Pro - Профессиональный Discord бот с AI.
+NLThinkingPanel Pro — Профессиональный Discord бот с AI.
 
 Модульная архитектура, расширенная аналитика, кэширование,
-rate limiting и система улучшения ответов AI.
+rate limiting, система улучшения ответов AI, репутация,
+личности, база знаний, авто-модерация, напоминания и многое другое.
 """
 import discord
 from discord.ext import commands
@@ -12,6 +13,12 @@ from pathlib import Path
 from core.logger import logger, setup_logger
 from config.config import config
 from core.cache import cache
+from core.health_monitor import health_monitor
+from core.event_system import event_system
+from modules.reminder_system import reminder_system
+from modules.mood_analyzer import mood_analyzer
+from modules.auto_moderator import auto_moderator
+from modules.reputation_system import reputation_system, BADGES as BADGES_MAP
 
 
 class NLThinkingPanelBot(commands.Bot):
@@ -24,6 +31,7 @@ class NLThinkingPanelBot(commands.Bot):
         intents.message_content = True
         intents.presences = True
         intents.members = True
+        intents.voice_states = True
         
         super().__init__(
             command_prefix=config.command_prefix,
@@ -60,14 +68,14 @@ class NLThinkingPanelBot(commands.Bot):
         """Событие готовности бота."""
         self.start_time = discord.utils.utcnow()
         
-        logger.info("=" * 50)
+        logger.info("═" * 60)
         logger.info(f"🤖 Бот запущен: {self.user.name} (ID: {self.user.id})")
         logger.info(f"📊 Серверов: {len(self.guilds)}")
         logger.info(f"👥 Пользователей: {sum(g.member_count for g in self.guilds)}")
         logger.info(f"🔧 Префикс команд: {config.command_prefix}")
         logger.info(f"🤖 Модель: {config.openrouter_model}")
         logger.info(f"📦 Модулей загружено: {len(self.cogs)}")
-        logger.info("=" * 50)
+        logger.info("═" * 60)
         
         # Установка статуса
         activity = discord.Activity(
@@ -76,8 +84,18 @@ class NLThinkingPanelBot(commands.Bot):
         )
         await self.change_presence(activity=activity, status=discord.Status.online)
         
+        # Health Monitor
+        health_monitor.heartbeat()
+        health_monitor.update_component_status('discord', 'healthy', self.latency * 1000, 'Подключен')
+        
+        # Emit event
+        await event_system.emit('bot.ready', guilds=len(self.guilds), user=str(self.user))
+        
         # Запуск фоновых задач
         self.loop.create_task(self.cleanup_task())
+        self.loop.create_task(reminder_system.check_loop(self))
+        self.loop.create_task(self.heartbeat_task())
+        self.loop.create_task(self.mood_tracking_task())
     
     async def cleanup_task(self):
         """Фоновая задача для очистки кэша и других ресурсов."""
@@ -95,6 +113,120 @@ class NLThinkingPanelBot(commands.Bot):
                 
             except Exception as e:
                 logger.error(f"Ошибка в cleanup_task: {e}")
+    
+    async def heartbeat_task(self):
+        """Heartbeat и мониторинг здоровья."""
+        await self.wait_until_ready()
+        
+        while not self.is_closed():
+            try:
+                health_monitor.heartbeat()
+                health_monitor.update_component_status(
+                    'discord_ws',
+                    'healthy' if self.latency < 1 else 'degraded',
+                    self.latency * 1000,
+                    f'Latency: {self.latency*1000:.0f}ms'
+                )
+                await asyncio.sleep(30)
+            except Exception as e:
+                logger.error(f"Ошибка в heartbeat_task: {e}")
+    
+    async def mood_tracking_task(self):
+        """Фоновая задача для трекинга настроения (логирование)."""
+        await self.wait_until_ready()
+        logger.info("🎭 Mood tracking task запущена")
+        
+        while not self.is_closed():
+            try:
+                await asyncio.sleep(600)  # Каждые 10 минут
+                stats = mood_analyzer.get_stats()
+                health_monitor.record_module_metric('mood_analyzer', 'users_tracked', stats['users_tracked'])
+            except Exception as e:
+                logger.error(f"Ошибка в mood_tracking_task: {e}")
+    
+    async def on_message(self, message):
+        """Обработка каждого сообщения — авто-модерация, репутация, mood."""
+        if message.author.bot:
+            return
+        
+        # Авто-модерация
+        try:
+            filter_result = auto_moderator.check_message(
+                user_id=message.author.id,
+                content=message.content,
+                channel_id=message.channel.id if hasattr(message.channel, 'id') else 0
+            )
+            
+            if filter_result.triggered:
+                if filter_result.action == 'delete':
+                    try:
+                        await message.delete()
+                    except discord.Forbidden:
+                        pass
+                
+                if filter_result.action in ('warn', 'delete'):
+                    auto_moderator.add_warning(
+                        user_id=message.author.id,
+                        reason=filter_result.reason,
+                        severity=filter_result.severity,
+                        auto=True,
+                        channel_id=message.channel.id if hasattr(message.channel, 'id') else 0,
+                    )
+                    
+                    await event_system.emit(
+                        'moderation.auto_action',
+                        user_id=message.author.id,
+                        action=filter_result.action,
+                        reason=filter_result.reason,
+                    )
+        except Exception as e:
+            logger.error(f"Ошибка авто-модерации: {e}")
+        
+        # Репутация (XP за сообщения)
+        try:
+            xp_granted, leveled_up, new_badge = reputation_system.grant_xp(
+                user_id=message.author.id,
+                user_name=message.author.display_name,
+                action='message'
+            )
+            
+            if leveled_up:
+                card = reputation_system.get_user_card(message.author.id)
+                if card:
+                    embed = discord.Embed(
+                        title="🎉 Уровень повышен!",
+                        description=(
+                            f"{message.author.mention} достиг **уровня {card['level']}**!\n"
+                            f"{card['title']}"
+                        ),
+                        color=discord.Color.gold()
+                    )
+                    await message.channel.send(embed=embed, delete_after=15)
+            
+            if new_badge and new_badge in BADGES_MAP:
+                badge_info = BADGES_MAP[new_badge]
+                await message.channel.send(
+                    f"🏆 {message.author.mention} получил бейдж: "
+                    f"{badge_info[0]} **{badge_info[1]}**!",
+                    delete_after=10
+                )
+        except Exception:
+            pass  # Не критично
+        
+        # Mood tracking (быстрый, без AI)
+        try:
+            if len(message.content) > 5:
+                await mood_analyzer.analyze_and_record(
+                    user_id=message.author.id,
+                    channel_id=message.channel.id if hasattr(message.channel, 'id') else 0,
+                    text=message.content,
+                    use_ai=False  # Быстрый анализ
+                )
+        except Exception:
+            pass  # Не критично
+        
+        # Обязательно обрабатываем команды
+        await self.process_commands(message)
     
     async def on_command_error(self, ctx, error):
         """Обработка ошибок команд."""
@@ -146,8 +278,8 @@ def main():
     logger.info(f"📋 Включенные модули: {', '.join(config.enabled_modules)}")
     
     # Создание необходимых директорий
-    Path('data').mkdir(exist_ok=True)
-    Path('logs').mkdir(exist_ok=True)
+    for directory in ['data', 'logs', 'data/conversations', 'data/moderation']:
+        Path(directory).mkdir(parents=True, exist_ok=True)
     
     # Создание и запуск бота
     bot = NLThinkingPanelBot()
