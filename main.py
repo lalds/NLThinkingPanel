@@ -19,6 +19,7 @@ from modules.reminder_system import reminder_system
 from modules.mood_analyzer import mood_analyzer
 from modules.auto_moderator import auto_moderator
 from modules.reputation_system import reputation_system, BADGES as BADGES_MAP
+from modules.web_panel import web_panel
 
 
 class NLThinkingPanelBot(commands.Bot):
@@ -96,6 +97,9 @@ class NLThinkingPanelBot(commands.Bot):
         self.loop.create_task(reminder_system.check_loop(self))
         self.loop.create_task(self.heartbeat_task())
         self.loop.create_task(self.mood_tracking_task())
+        
+        # Запуск веб-панели
+        self.loop.create_task(web_panel.start())
     
     async def cleanup_task(self):
         """Фоновая задача для очистки кэша и других ресурсов."""

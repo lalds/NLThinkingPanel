@@ -20,11 +20,13 @@ class AIProvider:
             api_key=config.openrouter_api_key,
         )
         
-        # Fallback модели (если основная недоступна)
+        # Fallback модели (актуальные бесплатные варианты)
         self.fallback_models = [
+            'google/gemini-2.0-flash-lite-preview-02-05:free',
+            'deepseek/deepseek-chat:free',
+            'qwen/qwen-2.5-72b-instruct:free',
             'anthropic/claude-3-haiku',
             'openai/gpt-3.5-turbo',
-            'google/gemini-flash-1.5',
             'meta-llama/llama-3-8b-instruct:free'
         ]
     

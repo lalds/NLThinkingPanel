@@ -13,6 +13,7 @@ from modules.voice_engine import voice_engine
 from modules.ai_provider import ai_provider
 from modules.personality_engine import personality_engine
 from modules.context_builder import context_builder
+from modules.web_panel import web_panel
 from config.config import config
 
 class UserAudioBuffer:
@@ -230,6 +231,14 @@ class VoiceCog(commands.Cog):
                     f"Ответь максимально естественно и кратко. Не повторяй приветствия."
                 )
                 
+                # Отправляем состояние "Думает" на веб-панель
+                await web_panel.broadcast({
+                    'type': 'state',
+                    'state': 'thinking',
+                    'speaker': active_persona.name,
+                    'text': '...'
+                })
+                
                 # Запускаем в executor чтобы не блокировать loop, так как ai_provider синхронный
                 def _gen():
                     return ai_provider.generate_response(
@@ -251,7 +260,20 @@ class VoiceCog(commands.Cog):
                 # 4. TTS и воспроизведение
                 audio_path = await voice_engine.text_to_speech(answer)
                 if audio_path:
+                    # Отправляем состояние "Говорит" на веб-панель
+                    await web_panel.broadcast({
+                        'type': 'state',
+                        'state': 'talking',
+                        'speaker': active_persona.name,
+                        'text': answer
+                    })
+                    
                     self._play_audio(user.guild.id, audio_path)
+                    
+                    # Ожидаем конца аудио и возвращаемся в idle
+                    # Примерная длительность: количество символов / 15
+                    await asyncio.sleep(len(answer) / 15)
+                    await web_panel.broadcast({'type': 'state', 'state': 'idle'})
                     
                 # Дублируем текстом
                 embed = discord.Embed(
