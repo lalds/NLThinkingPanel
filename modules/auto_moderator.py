@@ -324,7 +324,7 @@ class AutoModerator:
         try:
             from modules.ai_provider import ai_provider
 
-            result = ai_provider.generate_response(
+            result = await ai_provider.generate_response(
                 system_prompt=(
                     "Ты — классификатор токсичности текста.\n"
                     "Определи, содержит ли текст: оскорбления, угрозы, дискриминацию, "

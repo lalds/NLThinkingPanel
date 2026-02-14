@@ -117,7 +117,7 @@ class SearchEngine:
 
         return scraped
 
-    def should_use_web_search(self, question: str, mode: str = "auto", triggers: Optional[List[str]] = None) -> bool:
+    async def should_use_web_search(self, question: str, mode: str = "auto", triggers: Optional[List[str]] = None) -> bool:
         """Решает, нужен ли веб-поиск для вопроса. Использует гибридный подход (триггеры + AI)."""
         normalized_mode = str(mode or "auto").lower().strip()
         if normalized_mode == "always":
@@ -144,7 +144,7 @@ class SearchEngine:
         # Импорт здесь, чтобы избежать циклических ссылок при инициализации
         try:
             from modules.ai_provider import ai_provider
-            return ai_provider.check_search_necessity(question)
+            return await ai_provider.check_search_necessity(question)
         except ImportError:
             logger.warning("Could not import ai_provider for web search check")
             return False

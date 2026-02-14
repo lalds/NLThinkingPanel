@@ -463,7 +463,7 @@ class FunCommands(commands.Cog):
         try:
             from modules.ai_provider import ai_provider
 
-            result = ai_provider.generate_response(
+            result = await ai_provider.generate_response(
                 system_prompt=(
                     "Ты — мастер дружеской прожарки. Сделай смешную, но НЕ оскорбительную "
                     "прожарку пользователя. Должно быть смешно и добродушно. "
@@ -495,7 +495,7 @@ class FunCommands(commands.Cog):
         try:
             from modules.ai_provider import ai_provider
 
-            result = ai_provider.generate_response(
+            result = await ai_provider.generate_response(
                 system_prompt=(
                     "Ты — мастер комплиментов. Скажи очень приятный и оригинальный "
                     "комплимент пользователю. Будь креативным и искренним. "
@@ -526,7 +526,7 @@ class FunCommands(commands.Cog):
         try:
             from modules.ai_provider import ai_provider
 
-            result = ai_provider.generate_response(
+            result = await ai_provider.generate_response(
                 system_prompt=(
                     "Ты — генератор мемов. Создай смешной мем в текстовом формате.\n"
                     "Формат:\n"
@@ -567,7 +567,7 @@ class FunCommands(commands.Cog):
         try:
             from modules.ai_provider import ai_provider
 
-            result = ai_provider.generate_response(
+            result = await ai_provider.generate_response(
                 system_prompt=(
                     "Ты — квизмастер. Создай один вопрос с 4 вариантами ответа.\n"
                     "Формат (СТРОГО):\n"

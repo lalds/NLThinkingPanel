@@ -8,12 +8,13 @@ import io
 import wave
 import time
 import speech_recognition as sr
-import edge_tts
+from gtts import gTTS
+from pydub import AudioSegment
 from core.logger import logger
 from typing import Optional
 
 class VoiceEngine:
-    """Движок для обработки голоса (TTS и STT) на базе Edge-TTS."""
+    """Движок для обработки голоса (TTS и STT)."""
     
     def __init__(self, temp_dir: str = "data/voice_temp"):
         self.temp_dir = temp_dir
@@ -22,7 +23,6 @@ class VoiceEngine:
             logger.info(f"Создана директория для временных аудиофайлов: {self.temp_dir}")
         self.recognizer = sr.Recognizer()
         self.speech_speed = 1.3 # Коэффициент ускорения
-        self.default_voice = "ru-RU-SvetlanaNeural"
 
     async def speech_to_text(self, audio_data: bytes) -> Optional[str]:
         """
@@ -33,10 +33,11 @@ class VoiceEngine:
             start_time = time.time()
             
             # Конвертируем PCM в WAV
+            # Google STT лучше работает с Mono
             buffer = io.BytesIO()
             with wave.open(buffer, 'wb') as wf:
-                wf.setnchannels(1) 
-                wf.setsampwidth(2) 
+                wf.setnchannels(1) # Конвертируем в моно
+                wf.setsampwidth(2) # 16-bit
                 wf.setframerate(48000)
                 
                 mono_data = bytearray()
@@ -62,8 +63,10 @@ class VoiceEngine:
             text = await asyncio.get_event_loop().run_in_executor(None, _recognize)
             
             duration = time.time() - start_time
-            if text:
-                logger.info(f"STT успешно ({duration:.2f}s): {text[:50]}...")
+            if text and len(text.strip()) > 0:
+                logger.info(f"✅ STT успешно ({duration:.2f}s): {text[:50]}...")
+            else:
+                logger.info(f"😶 STT вернул пустоту ({duration:.2f}s). Возможно, слишком тихо или неразборчиво.")
             
             return text
             
@@ -73,27 +76,43 @@ class VoiceEngine:
 
     async def text_to_speech(self, text: str, lang: str = 'ru') -> Optional[str]:
         """
-        Превращает текст в аудиофайл (MP3) через Edge-TTS.
+        Превращает текст в аудиофайл (MP3) и ускоряет его.
         """
         if not text:
             return None
             
         try:
-            # Превращаем коэффициент в формат edge-tts (например, 1.3 -> +30%)
-            rate_val = int((self.speech_speed - 1) * 100)
-            rate_str = f"{'+' if rate_val >= 0 else ''}{rate_val}%"
-            
             # Генерируем уникальное имя файла
-            text_hash = hashlib.md5(f"{text}_{rate_str}_{self.default_voice}".encode()).hexdigest()
+            # Добавляем скорость в хэш, чтобы при изменении скорости кэш обновлялся
+            speed_suffix = str(self.speech_speed).replace('.', '_')
+            text_hash = hashlib.md5(f"{text}_{speed_suffix}".encode()).hexdigest()
             filename = os.path.abspath(os.path.join(self.temp_dir, f"tts_{text_hash}.mp3"))
             
             if os.path.exists(filename):
                 return filename
 
-            logger.info(f"Генерация Edge-TTS ({self.default_voice}, rate {rate_str}): {text[:50]}...")
+            logger.info(f"Генерация TTS ({lang}, speed {self.speech_speed}x): {text[:50]}...")
             
-            communicate = edge_tts.Communicate(text, self.default_voice, rate=rate_str)
-            await communicate.save(filename)
+            def _save_and_speedup():
+                # 1. Генерируем стандартный TTS
+                temp_file = filename + ".tmp.mp3"
+                tts = gTTS(text=text, lang=lang)
+                tts.save(temp_file)
+                
+                # 2. Ускоряем с помощью pydub
+                audio = AudioSegment.from_file(temp_file)
+                
+                # speedup() от pydub делает ускорение без изменения тональности
+                # chunk_size и crossfade помогают избежать щелчков
+                faster_audio = audio.speedup(playback_speed=self.speech_speed)
+                
+                faster_audio.export(filename, format="mp3")
+                
+                # Удаляем временный файл
+                if os.path.exists(temp_file):
+                    os.remove(temp_file)
+                
+            await asyncio.get_event_loop().run_in_executor(None, _save_and_speedup)
             
             if os.path.exists(filename):
                 return filename

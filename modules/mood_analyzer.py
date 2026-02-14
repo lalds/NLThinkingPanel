@@ -194,7 +194,7 @@ class MoodAnalyzer:
                 "Ответь ТОЛЬКО одним словом."
             )
 
-            result = ai_provider.generate_response(
+            result = await ai_provider.generate_response(
                 system_prompt=system_prompt,
                 user_message=text[:500],
                 max_tokens=10,

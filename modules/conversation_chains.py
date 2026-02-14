@@ -477,7 +477,7 @@ class ConversationManager:
                 for m in chain.messages[-20:]
             ])
 
-            result = ai_provider.generate_response(
+            result = await ai_provider.generate_response(
                 system_prompt=(
                     "Ты — суммаризатор. Сделай краткое резюме диалога в 3-5 предложениях. "
                     "Упомяни: основную тему, ключевые решения, и текущий статус обсуждения."

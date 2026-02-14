@@ -660,7 +660,7 @@ class UtilityCommands(commands.Cog):
             }
             lang_display = lang_names.get(lang.lower(), lang)
 
-            result = ai_provider.generate_response(
+            result = await ai_provider.generate_response(
                 system_prompt=f"Ты — переводчик. Переведи текст на {lang_display}. Отвечай ТОЛЬКО переводом, без пояснений.",
                 user_message=text,
                 max_tokens=500,

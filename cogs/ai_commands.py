@@ -26,19 +26,18 @@ class AICog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    def _safe_should_use_web(self, question: str) -> bool:
-        """Безопасная проверка авто-веб поиска (совместима со старыми версиями SearchEngine)."""
+    async def _safe_should_use_web(self, question: str) -> bool:
+        """Безопасная проверка авто-веб поиска (асинхронная)."""
         try:
             if hasattr(search_engine, 'should_use_web_search'):
-                try:
-                    return search_engine.should_use_web_search(
-                        question=question,
-                        mode=getattr(config, 'web_auto_search_mode', 'auto'),
-                        triggers=getattr(config, 'web_auto_triggers', [])
-                    )
-                except TypeError:
-                    # Совместимость со старыми сигнатурами метода
-                    return search_engine.should_use_web_search(question)
+                res = search_engine.should_use_web_search(
+                    question=question,
+                    mode=getattr(config, 'web_auto_search_mode', 'auto'),
+                    triggers=getattr(config, 'web_auto_triggers', [])
+                )
+                if asyncio.iscoroutine(res):
+                    return await res
+                return res
 
             fallback_triggers = [
                 'новости', 'сегодня', 'сейчас', 'актуальн', 'курс',
@@ -158,7 +157,7 @@ class AICog(commands.Cog):
                 web_block = ""
                 
                 # Check Auto-Web
-                should_search = self._safe_should_use_web(question)
+                should_search = await self._safe_should_use_web(question)
                 if should_search:
                      used_auto_web = True
                      web_data = self._safe_gather_web_context(question, 6, 2, 2500)
@@ -184,7 +183,7 @@ class AICog(commands.Cog):
                     final_prompt = ai_provider.optimize_prompt(final_prompt)
                 
                 # --- Generation ---
-                result = ai_provider.generate_response(
+                result = await ai_provider.generate_response(
                     system_prompt=final_prompt,
                     user_message=question,
                     temperature=active_persona.temperature, # Use persona temp
@@ -264,7 +263,7 @@ class AICog(commands.Cog):
                 
                 system_prompt = f"{active_persona.system_prompt}\n\n{profile_ctx}\n\nОтвечай кратко и по делу."
 
-                result = ai_provider.generate_response(
+                result = await ai_provider.generate_response(
                     system_prompt=system_prompt,
                     user_message=question,
                     temperature=active_persona.temperature,
@@ -415,7 +414,7 @@ class AICog(commands.Cog):
                 
                 await status_msg.edit(content="🧠 Формирую ответ...")
                 
-                result = ai_provider.generate_response(
+                result = await ai_provider.generate_response(
                     system_prompt=full_system_prompt,
                     user_message=f"Сделай выжимку и ответ на вопрос: {question}",
                     temperature=active_persona.temperature,
