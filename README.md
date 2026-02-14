@@ -333,19 +333,3 @@ async def setup(bot):
 Приветствуются Pull Requests! Для крупных изменений сначала откройте Issue для обсуждения.
 
 ---
-
-## 📞 Поддержка
-
-- 🐛 **Баги**: Создайте [Issue](https://github.com/your-username/NLThinkingPanel/issues)
-- 💡 **Идеи**: Создайте [Discussion](https://github.com/your-username/NLThinkingPanel/discussions)
-- 📧 **Email**: your-email@example.com
-
----
-
-<div align="center">
-
-**Developed with ❤️ for smart communities**
-
-⭐ Поставьте звезду, если проект вам понравился!
-
-</div>
