@@ -8,6 +8,8 @@ import discord.ext.voice_recv as voice_recv
 import asyncio
 import os
 import time
+import re
+from typing import Optional, Dict, List
 from core.logger import logger
 from modules.voice_engine import voice_engine
 from modules.ai_provider import ai_provider
@@ -89,6 +91,10 @@ class VoiceCog(commands.Cog):
         # Ключевые слова для активации (можно расширить)
         self.wake_words = ['бот', 'bot', 'панель', 'panel', 'компьютер', 'computer']
         
+        # Состояния для Serum (секретка)
+        self._pending_serum = {} # user_id -> {'ts': float}
+        self._marathon_tasks = {} # guild_id -> asyncio.Task
+        
         # Запуск фоновой очистки
         self.bot.loop.create_task(self._cleanup_loop())
 
@@ -96,6 +102,34 @@ class VoiceCog(commands.Cog):
         if guild_id not in self._locks:
             self._locks[guild_id] = asyncio.Lock()
         return self._locks[guild_id]
+
+    def _extract_number(self, text: str) -> Optional[int]:
+        """Пытается извлечь число из текста (цифрами или словами)."""
+        # 1. Поиск цифр
+        digits = re.findall(r'\d+', text)
+        if digits:
+            return int(digits[0])
+            
+        # 2. Поиск слов (упрощенный маппинг)
+        nums_map = {
+            'ноль': 0, 'один': 1, 'два': 2, 'три': 3, 'четыре': 4, 'пять': 5,
+            'шесть': 6, 'семь': 7, 'восемь': 8, 'девять': 9, 'десять': 10,
+            'одиннадцать': 11, 'двенадцать': 12, 'тринадцать': 13, 'четырнадцать': 14,
+            'пятнадцать': 15, 'шестнадцать': 16, 'семнадцатый': 17, 'восемнадцатый': 18,
+            'девятнадцать': 19, 'двадцать': 20, 'тридцать': 30, 'сорок': 40,
+            'пятьдесят': 50, 'шестьдесят': 60, 'семьдесят': 70, 'восемьдесят': 80,
+            'девяносто': 90
+        }
+        
+        words = text.lower().split()
+        total = 0
+        found = False
+        for w in words:
+            if w in nums_map:
+                total += nums_map[w]
+                found = True
+        
+        return total if found else None
 
     async def _cleanup_loop(self):
         """Периодическая очистка временных файлов."""
@@ -165,6 +199,10 @@ class VoiceCog(commands.Cog):
 
     async def _stop_and_disconnect(self, guild):
         """Остановка слушателей и отключение от канала."""
+        if guild.id in self._marathon_tasks:
+            self._marathon_tasks[guild.id].cancel()
+            del self._marathon_tasks[guild.id]
+
         if guild.id in self._voice_clients:
             vc = self._voice_clients[guild.id]
             if guild.id in self._active_listeners:
@@ -203,10 +241,66 @@ class VoiceCog(commands.Cog):
         if len(self._voice_history[user.guild.id]) > 20:
              self._voice_history[user.guild.id] = self._voice_history[user.guild.id][-20:]
 
+        # --- СЕКРЕТКА: СЕРУМ ---
+        # 1.5 Проверка состояния ожидания версии
+        if user.id in self._pending_serum:
+            state = self._pending_serum[user.id]
+            # Состояние живет 60 секунд
+            if time.time() - state['ts'] < 60:
+                num = self._extract_number(text)
+                if num:
+                    del self._pending_serum[user.id]
+                    fart_file = os.path.join("farts", f"Пук{num}.m4a")
+                    abs_path = os.path.abspath(fart_file)
+                    if os.path.exists(abs_path):
+                        logger.info(f"💨 [SERUM] Воспроизведение звука {num} для {user.display_name}")
+                        self._play_audio(user.guild.id, abs_path)
+                        return
+                    else:
+                        logger.warning(f"Файл не найден: {abs_path}")
+            else:
+                del self._pending_serum[user.id]
+
         # 2. Проверка Wake Word
         is_addressed = any(w in text.lower() for w in self.wake_words)
         if not is_addressed:
+            # Даже если не обратились по имени, проверяем стоп-фразы для марафона
+            if "я не хочу марафон" in text.lower() or "останови марафон" in text.lower():
+                if user.guild.id in self._marathon_tasks:
+                    logger.info(f"🛑 [MARATHON] Остановка по просьбе {user.display_name}")
+                    self._marathon_tasks[user.guild.id].cancel()
+                    # Говорим "ок"
+                    reply_path = await voice_engine.text_to_speech("Хорошо, останавливаю марафон.")
+                    if reply_path: self._play_audio(user.guild.id, reply_path)
             return
+
+        # 2.5a Обработка "Марафона"
+        if "марафон" in text.lower():
+            if user.guild.id in self._marathon_tasks:
+                 reply_path = await voice_engine.text_to_speech("Марафон уже запущен.")
+                 if reply_path: self._play_audio(user.guild.id, reply_path)
+                 return
+            
+            logger.info(f"🏃 [MARATHON] Старт марафона на сервере {user.guild.name}")
+            task = self.bot.loop.create_task(self._run_marathon(user.guild.id))
+            self._marathon_tasks[user.guild.id] = task
+            return
+
+        # 2.6 Проверка активации секрета про Serum (секретка)
+        text_lower = text.lower()
+        is_serum_request = ("serum" in text_lower or "серум" in text_lower) and \
+                          any(kw in text_lower for kw in ['ссылк', 'плагин', 'скачат', 'где'])
+        
+        if is_serum_request:
+            logger.info(f"✨ [SERUM] Активация секрета для {user.display_name}")
+            lock = self._get_lock(user.guild.id)
+            async with lock:
+                reply = "Конечно. Подскажи, какая именно версия тебе нужна?"
+                path = await voice_engine.text_to_speech(reply)
+                if path:
+                    self._play_audio(user.guild.id, path)
+                    self._pending_serum[user.id] = {'ts': time.time()}
+                    return
 
         # Находим канал для ответа
         channel = user.guild.system_channel or user.guild.text_channels[0]
@@ -214,6 +308,14 @@ class VoiceCog(commands.Cog):
         lock = self._get_lock(user.guild.id)
         async with lock:
             try:
+                # 2.5 Подтверждение (слушаю...)
+                ack_text = f"{user.display_name}, слушаю..."
+                ack_path = await voice_engine.text_to_speech(ack_text)
+                if ack_path:
+                    self._play_audio(user.guild.id, ack_path)
+                    # Небольшая пауза, чтоб фраза успела начаться/прозвучать
+                    await asyncio.sleep(0.8)
+
                 # 3. Формируем контекст
                 history_text = "\n".join([
                     f"{msg['user']}: {msg['text']}" 
@@ -285,6 +387,59 @@ class VoiceCog(commands.Cog):
 
             except Exception as e:
                 logger.error(f"Критическая ошибка voice_processing: {e}")
+
+    async def _run_marathon(self, guild_id: int):
+        """Циклический перебор всех звуков из farts."""
+        try:
+            fart_dir = "farts"
+            if not os.path.exists(fart_dir):
+                return
+                
+            fart_files = [f for f in os.listdir(fart_dir) if f.endswith(('.m4a', '.mp3', '.wav'))]
+            
+            def get_num(name):
+                m = re.search(r'\d+', name)
+                return int(m.group()) if m else 999
+                
+            fart_files.sort(key=get_num)
+            
+            # Стартовое сообщение
+            start_path = await voice_engine.text_to_speech(f"Начинаю марафон из {len(fart_files)} звуков. Держитесь.")
+            if start_path:
+                self._play_audio(guild_id, start_path)
+                while guild_id in self._voice_clients and self._voice_clients[guild_id].is_playing():
+                    await asyncio.sleep(0.5)
+
+            for f in fart_files:
+                abs_path = os.path.abspath(os.path.join(fart_dir, f))
+                num = get_num(f)
+                
+                # Анонс
+                ann_path = await voice_engine.text_to_speech(f"Звук номер {num}")
+                if ann_path:
+                    self._play_audio(guild_id, ann_path)
+                    while guild_id in self._voice_clients and self._voice_clients[guild_id].is_playing():
+                        await asyncio.sleep(0.2)
+                
+                await asyncio.sleep(0.3)
+                
+                # Проигрывание
+                self._play_audio(guild_id, abs_path)
+                while guild_id in self._voice_clients and self._voice_clients[guild_id].is_playing():
+                    await asyncio.sleep(0.2)
+                
+                await asyncio.sleep(1.0) # Пауза между
+                
+            finish_path = await voice_engine.text_to_speech("Марафон окончен. Все выжили?")
+            if finish_path: self._play_audio(guild_id, finish_path)
+            
+        except asyncio.CancelledError:
+            logger.info(f"Марафон в {guild_id} отменен.")
+        except Exception as e:
+            logger.error(f"Ошибка марафона: {e}")
+        finally:
+            if guild_id in self._marathon_tasks:
+                del self._marathon_tasks[guild_id]
 
     def _play_audio(self, guild_id: int, path: str):
         if guild_id in self._voice_clients:
