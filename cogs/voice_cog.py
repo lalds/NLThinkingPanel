@@ -18,6 +18,10 @@ from modules.ai_provider import ai_provider
 from modules.personality_engine import personality_engine
 from modules.context_builder import context_builder
 from modules.web_panel import web_panel
+from modules.search_engine import search_engine
+from modules.user_profiles import user_profiles
+from modules.knowledge_base import knowledge_base
+from modules.mood_analyzer import mood_analyzer
 from config.config import config
 
 class UserAudioBuffer:
@@ -41,7 +45,7 @@ class UserAudioBuffer:
         now = time.time()
         self.last_data_time = now
         
-        if rms > 200: # Отсекаем шум кулеров
+        if rms > 350: # Подняли порог, чтобы игнорировать шорохи и тихий фон
             if not self.speech_detected:
                 logger.debug(f"🎙️ [VAD] Голос: {self.user.display_name} (RMS: {rms})")
             self.speech_detected = True
@@ -59,10 +63,10 @@ class UserAudioBuffer:
                     continue
                 
                 # 1. Защита от "бесконечной речи" (шума)
-                # Если накопилось больше 12 секунд и это не просто тишина
-                if self.speech_detected and len(self.buffer) > 48000 * 2 * 12:
-                     logger.info(f"⚡ [VAD] Принудительная обработка (лимит 12с) для {self.user.display_name}")
-                     self.last_speech_time = now - 10.0 # Имитируем тишину
+                # Если накопилось больше 30 секунд и это не просто тишина
+                if self.speech_detected and len(self.buffer) > 48000 * 2 * 30:
+                     logger.info(f"⚡ [VAD] Принудительная обработка (лимит 30с) для {self.user.display_name}")
+                     self.last_speech_time = now - 20.0 # Имитируем тишину
                 
                 # 2. Если речь НЕ обнаружена и данных много (>5 сек) - чистим шум
                 if not self.speech_detected and len(self.buffer) > 192000 * 5:
@@ -147,8 +151,9 @@ class VoiceCog(commands.Cog):
         self._marathon_tasks = {} # guild_id -> asyncio.Task
         self._thinking_loops = {} # guild_id -> asyncio.Task
         
-        # Запуск фоновой очистки
+        # Запуск фоновых задач
         self.bot.loop.create_task(self._cleanup_loop())
+        self.bot.loop.create_task(self._voice_health_check())
 
     def _get_lock(self, guild_id):
         if guild_id not in self._locks:
@@ -239,10 +244,17 @@ class VoiceCog(commands.Cog):
             
             # Приветствие
             persona = personality_engine.get_active_personality(ctx.channel.id, ctx.guild.id)
+            greeting = persona.greeting
+            
+            # Проверка особого пользователя
+            reymax_info = self._check_special_user_presence(ctx.guild)
+            if reymax_info:
+                greeting = f"{greeting} {reymax_info}"
+
             if persona.name.lower() not in self.wake_words:
                 self.wake_words.append(persona.name.lower())
             
-            greeting_path = await voice_engine.text_to_speech(persona.greeting)
+            greeting_path = await voice_engine.text_to_speech(greeting)
             if greeting_path:
                 self._play_audio(ctx.guild.id, greeting_path)
 
@@ -291,7 +303,14 @@ class VoiceCog(commands.Cog):
             logger.warning(f"⌛ Таймаут STT для {user.display_name}")
             return
         
-        if not text or len(text.strip()) < 2:
+        if not text:
+            return
+            
+        # Фильтруем мусор, но разрешаем цифры (для Serum) и короткие ответы в диалоге
+        is_num = any(char.isdigit() for char in text)
+        is_pending = user.id in self._pending_serum
+        
+        if len(text.strip()) < 3 and not (is_num or is_pending):
             return
 
         logger.info(f"🎤 [VOICE] {user.display_name}: {text}")
@@ -312,12 +331,24 @@ class VoiceCog(commands.Cog):
                 num = self._extract_number(text)
                 if num:
                     del self._pending_serum[user.id]
-                    fart_file = os.path.join("farts", f"Пук{num}.m4a")
-                    abs_path = os.path.abspath(fart_file)
-                    if os.path.exists(abs_path):
+                    # Пробуем разные варианты регистра (Win case-insensitive, но на всякий случай)
+                    paths_to_try = [
+                        os.path.abspath(os.path.join("farts", f"Пук{num}.m4a")),
+                        os.path.abspath(os.path.join("farts", f"пук{num}.m4a"))
+                    ]
+                    
+                    found_path = None
+                    for p in paths_to_try:
+                        if os.path.exists(p):
+                            found_path = p
+                            break
+                    
+                    if found_path:
                         logger.info(f"💨 [SERUM] Воспроизведение звука {num} для {user.display_name}")
-                        self._play_audio(user.guild.id, abs_path)
+                        self._play_audio(user.guild.id, found_path)
                         return
+                    else:
+                        logger.warning(f"💨 [SERUM] Число {num} получено, но файл farts/пук{num}.m4a не найден")
             else:
                 del self._pending_serum[user.id]
 
@@ -340,7 +371,7 @@ class VoiceCog(commands.Cog):
         is_in_conversation = False
         if user.guild.id in self._last_addressed:
             state = self._last_addressed[user.guild.id]
-            if state['user_id'] == user.id and time.time() - state['ts'] < 60:
+            if state['user_id'] == user.id and time.time() - state['ts'] < 15:
                 is_in_conversation = True
 
         if not is_addressed and not is_in_conversation:
@@ -353,8 +384,7 @@ class VoiceCog(commands.Cog):
                     if reply_path: self._play_audio(user.guild.id, reply_path)
             return
 
-        # Обновляем окно разговора
-        self._last_addressed[user.guild.id] = {'user_id': user.id, 'ts': time.time()}
+        # Активация прошла успешно
         logger.info(f"🎯 [VOICE] Активация для {user.display_name} (Wake Word: {is_addressed}, Окно: {is_in_conversation})")
 
         # 2.5a Обработка "Марафона"
@@ -392,17 +422,61 @@ class VoiceCog(commands.Cog):
             
             # Подготовка промпта
             active_persona = personality_engine.get_active_personality(channel.id, user.guild.id)
-            system_prompt = personality_engine.get_system_prompt(channel.id, user.guild.id)
-            history_text = "\n".join([f"{msg['user']}: {msg['text']}" for msg in self._voice_history[user.guild.id][-5:]])
+            base_system_prompt = personality_engine.get_system_prompt(channel.id, user.guild.id)
             
-            context_prompt = (
-                f"{system_prompt}\n\nКонтекст: {history_text}\n"
-                f"Пользователь {user.display_name}: {text}\n"
-                f"Ответь максимально кратко (1-2 предложения) для голосового чата."
+            # --- СБОР РАСШИРЕННОГО КОНТЕКСТА ---
+            # 1. База знаний (RAG)
+            kb_context = knowledge_base.get_relevant_for_ai(text, user.guild.id)
+            
+            # 2. Настроение и профиль
+            mood_ctx = mood_analyzer.get_mood_context_for_ai(user.id, channel.id)
+            profile_ctx = user_profiles.format_profile_for_context(user.id, user.display_name)
+            
+            # 3. Веб-поиск (MCP-подобный протокол для голоса)
+            web_block = ""
+            used_web = False
+            should_search = await search_engine.should_use_web_search(text)
+            
+            if should_search:
+                logger.info(f"🌐 [VOICE] Активация веб-поиска для {user.display_name}")
+                web_data = search_engine.gather_web_context(text, 5, 2, 2000)
+                web_block = f"\n🌐 **WEB SEARCH RESULTS:**\n{web_data['web_context']}\n{web_data['scraped_context']}\n"
+                used_web = True
+                
+                # Сохраняем в память канала
+                context_builder.add_web_research(
+                    channel.id, text, 
+                    search_engine.build_memory_summary(text, web_data['scraped_pages']),
+                    web_data['source_urls']
+                )
+
+            # Собираем системный промпт
+            full_system_prompt = f"{base_system_prompt}\n\n"
+            if kb_context:
+                full_system_prompt += f"{kb_context}\n\n"
+            if mood_ctx:
+                full_system_prompt += f"🎭 **КОНТЕКСТ НАСТРОЕНИЯ:**\n{mood_ctx}\n\n"
+            
+            full_system_prompt += f"👤 **ПРОФИЛЬ ПОЛЬЗОВАТЕЛЯ:**\n{profile_ctx}\n"
+
+            # 4. Финальная сборка через context_builder
+            context_prompt = context_builder.build_full_context_with_query(
+                guild=user.guild,
+                channel_id=channel.id,
+                author_name=user.display_name,
+                system_prompt=full_system_prompt,
+                query=text
             )
             
+            if web_block:
+                context_prompt += f"\n{web_block}\n"
+                context_prompt += "\nИНСТРУКЦИЯ: Используй предоставленные результаты веб-поиска для ответа на вопрос. Если там есть погода или новости — озвучь их."
+            
+            # Финальные инструкции всегда в конце
+            context_prompt += "\n\nИНСТРУКЦИЯ: Ты общаешься в ГОЛОСОВОМ чате. Отвечай максимально КРАТКО (1-3 предложения), емко и по существу. Ссылки и URL не читай."
+            
             # 2.2 Запрос к AI с таймаутом
-            logger.info(f"🤖 [AI] Генерация ответа для {user.display_name}...")
+            logger.info(f"🤖 [AI] Генерация ответа для {user.display_name} (Web: {used_web})...")
             result = await asyncio.wait_for(
                 ai_provider.generate_response(
                     system_prompt=context_prompt,
@@ -442,13 +516,15 @@ class VoiceCog(commands.Cog):
         finally:
             logger.info(f"👂 [VOICE] Обработка завершена для {user.display_name}")
             
-            # Запускаем отложенный перезапуск слушателя (после окончания речи бота)
+            # Обновляем окно разговора ПОСЛЕ ответа (даем 15 сек на продолжение)
+            self._last_addressed[user.guild.id] = {'user_id': user.id, 'ts': time.time()}
+            
             if user.guild.id in self._voice_clients:
-                self.bot.loop.create_task(self._delayed_relisten(user.guild.id))
+                asyncio.create_task(self._delayed_relisten(user.guild.id))
 
         # Сброс анимации в фоне
         if audio_path and answer:
-            self.bot.loop.create_task(self._reset_idle_state(len(answer) / 10))
+            asyncio.create_task(self._reset_idle_state(len(answer) / 10))
 
     async def _delayed_relisten(self, guild_id: int):
         """Отложенный перезапуск слушателя после окончания речи бота."""
@@ -605,6 +681,95 @@ class VoiceCog(commands.Cog):
             if vc.is_playing():
                 vc.stop()
 
+    async def _cleanup_loop(self):
+        """Очистка старых данных диалогов и памяти каждые 15 минут."""
+        while True:
+            await asyncio.sleep(900)
+            try:
+                now = time.time()
+                # Удаляем историю голоса старше 1 часа
+                for guild_id in list(self._voice_history.keys()):
+                    self._voice_history[guild_id] = [
+                        m for m in self._voice_history[guild_id]
+                        if now - m['time'] < 3600
+                    ]
+                
+                # Чистим зависшие запросы Serum
+                for user_id in list(self._pending_serum.keys()):
+                    if now - self._pending_serum[user_id]['ts'] > 300:
+                        del self._pending_serum[user_id]
+                
+                logger.debug("🧼 [VOICE] Плановая очистка ресурсов завершена")
+            except Exception as e:
+                logger.error(f"Ошибка в _cleanup_loop: {e}")
+
+    async def _voice_health_check(self):
+        """Проверка 'замирания' голосовых потоков (Watchdog)."""
+        while True:
+            await asyncio.sleep(60) 
+            try:
+                now = time.time()
+                for guild_id in list(self._voice_clients.keys()):
+                    vc = self._voice_clients.get(guild_id)
+                    sink = self._active_listeners.get(guild_id)
+                    
+                    if not vc or not vc.is_connected() or not sink:
+                        continue
+                    
+                    # Если бот в канале, но 5 минут нет активности (пакетов) - ребут слушателя
+                    if now - sink.last_packet_time > 300:
+                        # Если бот сам не говорит в этот момент
+                        if not vc.is_playing():
+                            logger.info(f"🔄 [WATCHDOG] Обнаружено замирание потока в {vc.guild.name}. Перезапуск...")
+                            await self._delayed_relisten(guild_id)
+            except Exception as e:
+                logger.error(f"Ошибка в _voice_health_check: {e}")
+
+    def _is_reymax(self, member):
+        """Проверка, является ли пользователь Reymax-ом."""
+        return member.name == "reymax_2008" or member.display_name == "некомфортно вырезал диван"
+
+    def _get_reymax_status_text(self, member):
+        """Получение текста статуса для Reymax."""
+        status_map = {
+            discord.Status.online: "теперь в сети",
+            discord.Status.idle: "теперь отошел от компьютера",
+            discord.Status.dnd: "теперь в режиме 'не беспокоить'",
+            discord.Status.offline: "теперь не в сети (оффлайн)"
+        }
+        return status_map.get(member.status, "изменил свой статус")
+
+    def _check_special_user_presence(self, guild):
+        """Первичная проверка Reymax-а при входе бота."""
+        member = discord.utils.find(self._is_reymax, guild.members)
+        if member and member.status != discord.Status.offline:
+            status_map = {
+                discord.Status.online: "в сети",
+                discord.Status.idle: "отошел от компьютера",
+                discord.Status.dnd: "в режиме 'не беспокоить'"
+            }
+            return f"Кстати, ваш любимчик {member.display_name} сейчас {status_map.get(member.status, 'в сети')}."
+        return None
+
+    @commands.Cog.listener()
+    async def on_presence_update(self, before, after):
+        """Трансляция изменения статуса Reymax в голосовой канал."""
+        if not self._is_reymax(after):
+            return
+            
+        if before.status == after.status:
+            return
+            
+        guild = after.guild
+        if guild.id in self._voice_clients:
+            vc = self._voice_clients[guild.id]
+            if vc.is_connected():
+                status_text = self._get_reymax_status_text(after)
+                text = f"Внимание всем участникам! {after.display_name} {status_text}."
+                audio_path = await voice_engine.text_to_speech(text)
+                if audio_path:
+                    self._play_audio(guild.id, audio_path)
+
     def _play_audio(self, guild_id: int, path: str):
         if guild_id in self._voice_clients:
             vc = self._voice_clients[guild_id]
@@ -633,6 +798,16 @@ class VoiceCog(commands.Cog):
                 if len(before.channel.members) == 1:
                     logger.info(f"Авто-выход (пустой канал) на сервере {member.guild.name}")
                     await self._stop_and_disconnect(member.guild)
+
+        # Логика для Reymax (вход в канал)
+        if self._is_reymax(member) and not before.channel and after.channel:
+             if member.guild.id in self._voice_clients:
+                 vc = self._voice_clients[member.guild.id]
+                 if vc.channel.id == after.channel.id:
+                     text = f"Внимание! В канал зашел {member.display_name}. Всем сохранять спокойствие!"
+                     audio_path = await voice_engine.text_to_speech(text)
+                     if audio_path:
+                         self._play_audio(member.guild.id, audio_path)
 
 async def setup(bot):
     """Регистрация Cog."""

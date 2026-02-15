@@ -296,7 +296,7 @@ class AIProvider:
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": f"Query: {query}"}
                 ],
-                max_tokens=5,
+                max_tokens=20,
                 temperature=0.1,
                 extra_headers={
                     "HTTP-Referer": "https://github.com/NLThinkingPanel",
@@ -317,7 +317,7 @@ class AIProvider:
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": f"Query: {query}"}
                     ],
-                    max_tokens=5,
+                    max_tokens=20,
                     temperature=0.1
                 )
                 content = res.choices[0].message.content.strip().upper()
