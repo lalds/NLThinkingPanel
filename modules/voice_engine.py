@@ -32,26 +32,26 @@ class VoiceEngine:
         try:
             start_time = time.time()
             
-            # Конвертируем PCM в WAV
-            # Google STT лучше работает с Mono
-            buffer = io.BytesIO()
-            with wave.open(buffer, 'wb') as wf:
-                wf.setnchannels(1) # Конвертируем в моно
-                wf.setsampwidth(2) # 16-bit
-                wf.setframerate(48000)
+            def _process_and_recognize():
+                # Конвертируем PCM в WAV
+                # Google STT лучше работает с Mono
+                buffer = io.BytesIO()
+                with wave.open(buffer, 'wb') as wf:
+                    wf.setnchannels(1) # Конвертируем в моно
+                    wf.setsampwidth(2) # 16-bit
+                    wf.setframerate(48000)
+
+                    mono_data = bytearray()
+                    for i in range(0, len(audio_data), 4):
+                        mono_data.extend(audio_data[i:i+2])
+
+                    wf.writeframes(mono_data)
                 
-                mono_data = bytearray()
-                for i in range(0, len(audio_data), 4):
-                    mono_data.extend(audio_data[i:i+2])
+                buffer.seek(0)
+
+                with sr.AudioFile(buffer) as source:
+                    audio = self.recognizer.record(source)
                 
-                wf.writeframes(mono_data)
-            
-            buffer.seek(0)
-            
-            with sr.AudioFile(buffer) as source:
-                audio = self.recognizer.record(source)
-            
-            def _recognize():
                 try:
                     return self.recognizer.recognize_google(audio, language="ru-RU")
                 except sr.UnknownValueError:
@@ -60,7 +60,7 @@ class VoiceEngine:
                     logger.error(f"Ошибка сервиса Google STT: {e}")
                     return None
 
-            text = await asyncio.get_event_loop().run_in_executor(None, _recognize)
+            text = await asyncio.get_event_loop().run_in_executor(None, _process_and_recognize)
             
             duration = time.time() - start_time
             if text and len(text.strip()) > 0:
